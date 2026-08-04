@@ -1,0 +1,5606 @@
+-- ==========================================================
+-- 🍌 BANANIHUB 🍌
+-- L = Open / Close
+-- ==========================================================
+
+-- Clean up an older copy before creating a new UI.
+do
+    local Environment = getgenv and getgenv() or _G
+    local PreviousUnload = Environment.__BANANIHUB_UNLOAD
+
+    if type(PreviousUnload) == "function" then
+        pcall(PreviousUnload)
+    end
+
+    Environment.__BANANIHUB_UNLOAD = nil
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
+local Stats = game:GetService("Stats")
+local VirtualUser = game:GetService("VirtualUser")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local Player = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local PlaceInfo = {
+    Name =
+        (game.Name and game.Name ~= "")
+        and game.Name
+        or "Unknown Experience",
+    Creator = "Loading...",
+    IconImageAssetId = 0
+}
+
+local BANANIHUB_VERSION = "2.3.1"
+local UIToggleKey = Enum.KeyCode.L
+--==============================================================
+-- RAYFIELD
+--==============================================================
+
+local DEFAULT_GRAY_THEME = {
+    -- Dark charcoal base. Yellow is reserved for interactive accents.
+    TextColor = Color3.fromRGB(247, 247, 242),
+    Background = Color3.fromRGB(29, 29, 31),
+    Topbar = Color3.fromRGB(36, 36, 39),
+    Shadow = Color3.fromRGB(12, 12, 14),
+
+    NotificationBackground = Color3.fromRGB(34, 34, 37),
+    NotificationActionsBackground = Color3.fromRGB(250, 204, 54),
+
+    TabBackground = Color3.fromRGB(42, 42, 45),
+    TabStroke = Color3.fromRGB(78, 70, 42),
+    TabBackgroundSelected = Color3.fromRGB(250, 204, 54),
+    TabTextColor = Color3.fromRGB(232, 232, 226),
+    SelectedTabTextColor = Color3.fromRGB(35, 29, 8),
+
+    ElementBackground = Color3.fromRGB(43, 43, 46),
+    ElementBackgroundHover = Color3.fromRGB(62, 57, 37),
+    SecondaryElementBackground = Color3.fromRGB(35, 35, 38),
+    ElementStroke = Color3.fromRGB(126, 103, 34),
+    SecondaryElementStroke = Color3.fromRGB(72, 65, 42),
+
+    SliderBackground = Color3.fromRGB(78, 70, 39),
+    SliderProgress = Color3.fromRGB(250, 204, 54),
+    SliderStroke = Color3.fromRGB(255, 229, 133),
+
+    ToggleBackground = Color3.fromRGB(43, 43, 46),
+    ToggleEnabled = Color3.fromRGB(250, 204, 54),
+    ToggleDisabled = Color3.fromRGB(99, 99, 104),
+    ToggleEnabledStroke = Color3.fromRGB(255, 232, 143),
+    ToggleDisabledStroke = Color3.fromRGB(126, 126, 132),
+    ToggleEnabledOuterStroke = Color3.fromRGB(183, 145, 29),
+    ToggleDisabledOuterStroke = Color3.fromRGB(68, 68, 73),
+
+    DropdownSelected = Color3.fromRGB(62, 56, 35),
+    DropdownUnselected = Color3.fromRGB(43, 43, 46),
+
+    InputBackground = Color3.fromRGB(39, 39, 42),
+    InputStroke = Color3.fromRGB(126, 103, 34),
+    PlaceholderColor = Color3.fromRGB(176, 169, 139),
+
+    -- Used by BananiUI versions with separate button theme support.
+    ButtonBackground = Color3.fromRGB(250, 204, 54),
+    ButtonBackgroundHover = Color3.fromRGB(255, 218, 86),
+    ButtonTextColor = Color3.fromRGB(35, 29, 8),
+    ButtonStroke = Color3.fromRGB(24, 24, 27)
+}
+
+local Rayfield = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/Chr1z218/BananiUi/refs/heads/main/source.lua"
+))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "🍌 BANANIHUB 🍌",
+    LoadingTitle = "🍌 BANANIHUB 🍌",
+    LoadingSubtitle = "Loading library...",
+    Theme = DEFAULT_GRAY_THEME,
+
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "BANANIHUB",
+        FileName = "Settings_v2_1"
+    },
+
+    Discord = {
+        Enabled = false
+    },
+
+    KeySystem = false
+})
+
+task.defer(function()
+    if Window and Window.ModifyTheme then
+        Window.ModifyTheme(DEFAULT_GRAY_THEME)
+    end
+end)
+
+--==============================================================
+-- VARIABLES
+--==============================================================
+
+local FlyEnabled = false
+local NoclipEnabled = false
+local FastWalkEnabled = false
+local HighJumpEnabled = false
+local InfiniteJumpEnabled = false
+local AutoJumpEnabled = false
+local FreezeEnabled = false
+local FullbrightEnabled = false
+local AntiFlingEnabled = false
+local AntiAFKEnabled = false
+local ChamsEnabled = false
+local NPCChamsEnabled = false
+local HitboxEnabled = false
+local LowGraphicsEnabled = false
+local FreecamEnabled = false
+local CameraShakeEnabled = false
+local Spectating = false
+local AntiVoidEnabled = false
+local AntiRagdollEnabled = false
+local SpiderClimbEnabled = false
+local BoxESPEnabled = false
+local HealthESPEnabled = false
+
+local FlySpeed = 50
+local WalkSpeed = 16
+local JumpPower = 50
+local FreecamSpeed = 50
+local CameraShakeStrength = 0.3
+local ChamsFillTransparency = 0.5
+local ChamsOutlineTransparency = 0
+local ChamsFillColor = Color3.fromRGB(255, 221, 0)
+local ChamsOutlineColor = Color3.fromRGB(255, 255, 255)
+local ChamsTeamColorsEnabled = false
+
+local SavedPosition = nil
+local SelectedPlayer = nil
+local SpectatorTarget = nil
+
+local FlyConnection
+local AutoJumpConnection
+local NoclipConnection
+local StatusConnection
+local ChamsConnection
+local NPCChamsConnection
+local HitboxConnection
+local FreecamConnection
+local CameraShakeConnection
+local SpectatorConnection
+local ServerStatusConnection
+local StatsStatusConnection
+local AntiVoidConnection
+local AntiRagdollConnection
+local SpiderClimbConnection
+local ESPConnection
+local Unloaded = false
+
+local Runtime = {
+    Connections = {},
+    NoclipOriginalCollision = setmetatable({}, {__mode = "k"}),
+    PerformanceConnections = {},
+    PerformanceGeneration = 0,
+    AvatarThumbnailCache = {},
+    LastStatsUserId = nil,
+    RefreshPlayersPending = false,
+    HumanoidDefaults = setmetatable({}, {__mode = "k"}),
+    AnchorStates = setmetatable({}, {__mode = "k"}),
+    FreezeConnection = nil,
+    FreezeRoot = nil,
+    FreezeCFrame = nil,
+    FreezeAnchoredState = nil,
+    LightingSnapshot = nil,
+    HomeExperienceParagraph = nil,
+    HomeGameLabel = nil,
+    HomeFavoritesParagraph = nil,
+    SettingsInfoParagraph = nil,
+    CurrentThemeName = "Default",
+    PreferencesFile = "BANANIHUB/UserPreferences.json",
+    Favorites = {},
+    FavoriteOptions = {
+        "Fly",
+        "Noclip",
+        "Spider Climb",
+        "Fast Walk",
+        "High Jump",
+        "Infinite Jump",
+        "Auto Jump",
+        "Freeze",
+        "Anti Void",
+        "Anti Ragdoll",
+        "Anti-Fling",
+        "Anti-AFK",
+        "Teleport Tool",
+        "Named Waypoints",
+        "Fullbright",
+        "Performance Mode",
+        "Player Chams",
+        "NPC Highlights",
+        "Box ESP",
+        "Health ESP",
+        "Freecam",
+        "Spectator",
+        "Stats",
+        "Server Actions"
+    }
+}
+
+Runtime.LoadingStage = "Loading library..."
+Runtime.VisitedServers = Runtime.VisitedServers or {}
+Runtime.AvoidCurrentServer = true
+Runtime.AvoidVisitedServers = true
+Runtime.CompactMode = Runtime.CompactMode == true
+local function SetLoadingStage(Stage)
+    Runtime.LoadingStage = tostring(Stage or "")
+
+    pcall(function()
+        if Window.SetLoadingSubtitle then
+            Window:SetLoadingSubtitle(Runtime.LoadingStage)
+        elseif Window.ModifyLoadingSubtitle then
+            Window:ModifyLoadingSubtitle(Runtime.LoadingStage)
+        end
+    end)
+
+    print("BANANIHUB | " .. Runtime.LoadingStage)
+end
+
+SetLoadingStage("Creating tabs...")
+
+local function TrackConnection(Connection)
+    if Connection then
+        table.insert(Runtime.Connections, Connection)
+    end
+
+    return Connection
+end
+
+TrackConnection(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    Camera = workspace.CurrentCamera or Camera
+end))
+
+local OriginalLighting = {
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    FogEnd = Lighting.FogEnd,
+    GlobalShadows = Lighting.GlobalShadows,
+    EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+    EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+}
+local OriginalGraphics = setmetatable({}, {__mode = "k"})
+local FreecamCFrame = Camera.CFrame
+local FreecamRotation = Vector2.zero
+local FreecamMouseConnection
+local FreecamEndConnection
+local FreecamChangedConnection
+local FreecamScrollStep = 5
+local FreecamSmoothEnabled = false
+local FreecamSmoothness = 0.18
+local FreecamCinematicEnabled = false
+local SavedFreecamCFrame = nil
+local FreecamOriginalFOV = Camera.FieldOfView
+
+local Waypoints = {}
+local WaypointDropdown
+local DeleteWaypointDropdown
+local PlayerDropdown
+local SpectatorDropdown
+local Dashboard
+local SpectatorInfo
+local ServerInformation
+local StatsInformation
+local StatsAvatarLabel
+local HelpInformation
+local StatsPlayerDropdown
+local SelectedStatsPlayer = Player
+local ChamsSettingsCreated = false
+local CustomThemeName = "Banana"
+local SelectedThemeFile = nil
+local ThemeFileDropdown
+local CustomTheme = {
+    TextColor = Color3.fromRGB(255, 248, 214),
+    Background = Color3.fromRGB(28, 24, 12),
+    Topbar = Color3.fromRGB(42, 35, 14),
+    Shadow = Color3.fromRGB(10, 8, 3),
+    NotificationBackground = Color3.fromRGB(35, 29, 12),
+    NotificationActionsBackground = Color3.fromRGB(255, 224, 72),
+    TabBackground = Color3.fromRGB(55, 46, 17),
+    TabStroke = Color3.fromRGB(104, 85, 20),
+    TabBackgroundSelected = Color3.fromRGB(255, 218, 54),
+    TabTextColor = Color3.fromRGB(255, 242, 181),
+    SelectedTabTextColor = Color3.fromRGB(44, 34, 3),
+    ElementBackground = Color3.fromRGB(45, 37, 14),
+    ElementBackgroundHover = Color3.fromRGB(58, 48, 18),
+    SecondaryElementBackground = Color3.fromRGB(37, 31, 12),
+    ElementStroke = Color3.fromRGB(91, 73, 19),
+    SecondaryElementStroke = Color3.fromRGB(71, 58, 17),
+    SliderBackground = Color3.fromRGB(112, 89, 19),
+    SliderProgress = Color3.fromRGB(255, 214, 43),
+    SliderStroke = Color3.fromRGB(255, 231, 107),
+    ToggleBackground = Color3.fromRGB(50, 41, 14),
+    ToggleEnabled = Color3.fromRGB(255, 210, 34),
+    ToggleDisabled = Color3.fromRGB(100, 89, 58),
+    ToggleEnabledStroke = Color3.fromRGB(255, 231, 103),
+    ToggleDisabledStroke = Color3.fromRGB(127, 113, 74),
+    ToggleEnabledOuterStroke = Color3.fromRGB(177, 139, 22),
+    ToggleDisabledOuterStroke = Color3.fromRGB(75, 65, 38),
+    DropdownSelected = Color3.fromRGB(67, 55, 18),
+    DropdownUnselected = Color3.fromRGB(45, 37, 14),
+    InputBackground = Color3.fromRGB(41, 34, 13),
+    InputStroke = Color3.fromRGB(100, 82, 20),
+    PlaceholderColor = Color3.fromRGB(191, 169, 93)
+}
+
+--==============================================================
+-- HELPERS
+--==============================================================
+
+local function GetExperienceThumbnail()
+    local IconId = tonumber(PlaceInfo.IconImageAssetId)
+
+    if not IconId or IconId <= 0 then
+        return nil
+    end
+
+    return "rbxthumb://type=Asset&id="
+        .. tostring(IconId)
+        .. "&w=420&h=420"
+end
+
+local function RefreshExperienceParagraphs()
+    local Thumbnail = GetExperienceThumbnail()
+    local Details =
+        "Creator: " .. tostring(PlaceInfo.Creator)
+        .. "\nBananiHub Version: " .. BANANIHUB_VERSION
+
+    if Runtime.HomeGameLabel then
+        pcall(function()
+            Runtime.HomeGameLabel:Set(
+                tostring(PlaceInfo.Name),
+                Thumbnail
+            )
+        end)
+    end
+
+    if Runtime.HomeExperienceParagraph then
+        pcall(function()
+            Runtime.HomeExperienceParagraph:Set({
+                Title = "Game Details",
+                Content = Details
+            })
+        end)
+    end
+end
+
+task.spawn(function()
+    local Success, Info = pcall(function()
+        return MarketplaceService:GetProductInfo(
+            game.PlaceId,
+            Enum.InfoType.Asset
+        )
+    end)
+
+    if Success and type(Info) == "table" then
+        PlaceInfo.Name = Info.Name or PlaceInfo.Name
+        PlaceInfo.IconImageAssetId =
+            tonumber(Info.IconImageAssetId)
+            or PlaceInfo.IconImageAssetId
+        if Info.Creator and Info.Creator.Name then
+            PlaceInfo.Creator = Info.Creator.Name
+        else
+            PlaceInfo.Creator = "Unknown"
+        end
+    else
+        PlaceInfo.Creator = "Unknown"
+    end
+
+    if not Unloaded then
+        RefreshExperienceParagraphs()
+    end
+end)
+
+local function Character()
+    return Player.Character
+end
+
+local function Humanoid()
+    local C = Character()
+    return C and C:FindFirstChildOfClass("Humanoid")
+end
+
+local function Root()
+    local C = Character()
+    return C and C:FindFirstChild("HumanoidRootPart")
+end
+
+local function Notify(Title, Content)
+    if Unloaded then return end
+
+    pcall(function()
+        Rayfield:Notify({
+            Title = tostring(Title or "BananiHub"),
+            Content = tostring(Content or ""),
+            Duration = 3
+        })
+    end)
+end
+
+Runtime.SavePreferences = function()
+    if not writefile then return false end
+
+    pcall(function()
+        if makefolder and isfolder and not isfolder("BANANIHUB") then
+            makefolder("BANANIHUB")
+        end
+    end)
+
+    local Favorites = {}
+
+    for Name, Enabled in pairs(Runtime.Favorites) do
+        if Enabled then
+            table.insert(Favorites, Name)
+        end
+    end
+
+    table.sort(Favorites)
+
+    local Success = pcall(function()
+        writefile(
+            Runtime.PreferencesFile,
+            HttpService:JSONEncode({
+                Theme = Runtime.CurrentThemeName,
+                Keybind = UIToggleKey.Name,
+                Favorites = Favorites
+            })
+        )
+    end)
+
+    return Success
+end
+
+Runtime.LoadPreferences = function()
+    if not readfile or not isfile or not isfile(Runtime.PreferencesFile) then
+        return
+    end
+
+    local Success, Data = pcall(function()
+        return HttpService:JSONDecode(
+            readfile(Runtime.PreferencesFile)
+        )
+    end)
+
+    if not Success or type(Data) ~= "table" then
+        return
+    end
+
+    if type(Data.Theme) == "string" then
+        Runtime.CurrentThemeName = Data.Theme
+    end
+
+    if type(Data.Keybind) == "string"
+        and Enum.KeyCode[Data.Keybind] then
+
+        UIToggleKey = Enum.KeyCode[Data.Keybind]
+    end
+
+    Runtime.Favorites = {}
+
+    if type(Data.Favorites) == "table" then
+        for _, Name in ipairs(Data.Favorites) do
+            Runtime.Favorites[tostring(Name)] = true
+        end
+    end
+end
+
+Runtime.GetFavoriteList = function()
+    local Favorites = {}
+
+    for Name, Enabled in pairs(Runtime.Favorites) do
+        if Enabled then
+            table.insert(Favorites, Name)
+        end
+    end
+
+    table.sort(Favorites)
+    return Favorites
+end
+
+Runtime.UpdatePreferenceDisplays = function()
+    local Favorites = Runtime.GetFavoriteList()
+    local FavoriteText =
+        #Favorites > 0
+        and table.concat(Favorites, ", ")
+        or "None selected"
+
+    if Runtime.HomeFavoritesParagraph then
+        pcall(function()
+            Runtime.HomeFavoritesParagraph:Set({
+                Title = "⭐ Favorites",
+                Content = FavoriteText
+            })
+        end)
+    end
+
+    if Runtime.SettingsInfoParagraph then
+        local ConfigCount = 0
+        local WaypointCount = 0
+
+        for _ in pairs(Waypoints) do
+            WaypointCount += 1
+        end
+
+        if listfiles then
+            local Success, Files =
+                pcall(listfiles, "BANANIHUB/NamedConfigs")
+
+            if Success and type(Files) == "table" then
+                for _, FilePath in ipairs(Files) do
+                    if tostring(FilePath):match("%.json$") then
+                        ConfigCount += 1
+                    end
+                end
+            end
+        end
+
+        pcall(function()
+            Runtime.SettingsInfoParagraph:Set({
+                Title = "👤 User Preferences",
+                Content =
+                    "Theme: "
+                    .. tostring(Runtime.CurrentThemeName)
+                    .. "\nKeybind: "
+                    .. tostring(UIToggleKey.Name)
+                    .. "\nFeature Values: saved through named configs"
+                    .. "\nSaved Presets / Configs: "
+                    .. tostring(ConfigCount)
+                    .. "\nWaypoints: "
+                    .. tostring(WaypointCount)
+                    .. "\nFavorites: "
+                    .. tostring(#Favorites)
+            })
+        end)
+    end
+end
+
+Runtime.LoadPreferences()
+
+local function ResolveLogLine(Line)
+    local NumericLine = tonumber(Line)
+
+    if NumericLine then
+        return math.floor(NumericLine)
+    end
+
+    if debug and type(debug.info) == "function" then
+        local Success, Result = pcall(function()
+            return debug.info(4, "l")
+        end)
+
+        if Success and tonumber(Result) then
+            return math.floor(tonumber(Result))
+        end
+    end
+
+    return nil
+end
+
+local function InferLogFeature(Message)
+    local Text = string.lower(tostring(Message or ""))
+
+    for _, Feature in ipairs({
+        "Freecam",
+        "Spectator",
+        "Stats",
+        "Server",
+        "Settings",
+        "Configs",
+        "Theme",
+        "Teleport",
+        "Waypoint",
+        "Performance",
+        "Chams",
+        "ESP",
+        "Fly",
+        "Noclip",
+        "Player",
+        "Visuals"
+    }) do
+        if string.find(Text, string.lower(Feature), 1, true) then
+            return Feature
+        end
+    end
+
+    return "General"
+end
+
+local function AddActionLog(Level, Message, Feature, Line)
+    if Unloaded then return end
+
+    local ValidLevels = {
+        Success = true,
+        Warning = true,
+        Error = true,
+        Information = true
+    }
+
+    Level = ValidLevels[Level] and Level or "Information"
+
+    local ResolvedLine = ResolveLogLine(Line)
+
+    if not ResolvedLine then
+        ResolvedLine =
+            tonumber(
+                tostring(Message or ""):match(":(%d+):")
+            )
+    end
+
+    local Output =
+        "BANANIHUB"
+        .. "\nFeature: "
+        .. tostring(Feature or InferLogFeature(Message))
+        .. "\nResult: "
+        .. Level
+        .. "\nMessage: "
+        .. tostring(Message or "")
+        .. "\nLine: "
+        .. tostring(ResolvedLine or "Unavailable")
+
+    if Level == "Error" or Level == "Warning" then
+        warn(Output)
+    else
+        print(Output)
+    end
+end
+
+local function LogSuccess(Message, Feature, Line)
+    AddActionLog("Success", Message, Feature, Line)
+end
+
+local function LogWarning(Message, Feature, Line)
+    AddActionLog("Warning", Message, Feature, Line)
+end
+
+local function LogError(Message, Feature, Line)
+    AddActionLog("Error", Message, Feature, Line)
+end
+
+local function LogInformation(Message, Feature, Line)
+    AddActionLog("Information", Message, Feature, Line)
+end
+
+Runtime.CopyValue = function(Label, Value)
+    if not setclipboard then
+        Notify(
+            "Copy",
+            "Clipboard access is unsupported."
+        )
+        LogWarning(
+            tostring(Label) .. " copy failed: clipboard unsupported",
+            "Home"
+        )
+        return false
+    end
+
+    local Success, ErrorMessage =
+        pcall(setclipboard, tostring(Value))
+
+    if Success then
+        Notify("Copied", tostring(Label) .. " copied.")
+        LogSuccess(tostring(Label) .. " copied", "Home")
+        return true
+    end
+
+    Notify(
+        "Copy",
+        "Copy failed: " .. tostring(ErrorMessage)
+    )
+    LogWarning(
+        tostring(Label)
+        .. " copy failed: "
+        .. tostring(ErrorMessage),
+        "Home"
+    )
+    return false
+end
+
+local function GetDisplayNames(Filter)
+    local List = {}
+    local LowerFilter = string.lower(Filter or "")
+
+    for _, P in ipairs(Players:GetPlayers()) do
+        if P ~= Player then
+            local SearchText = string.lower(P.DisplayName .. " " .. P.Name)
+            if LowerFilter == "" or string.find(SearchText, LowerFilter, 1, true) then
+                table.insert(
+                    List,
+                    P.DisplayName .. " (@" .. P.Name .. ")"
+                )
+            end
+        end
+    end
+
+    table.sort(List)
+    return List
+end
+
+local function FindPlayerByDisplayName(Name)
+    local SearchName = tostring(Name or "")
+    local Username =
+        SearchName:match("%(@([^%)]+)%)$")
+        or SearchName:match("^@(.+)$")
+
+    for _, P in ipairs(Players:GetPlayers()) do
+        if (Username and P.Name == Username)
+            or P.DisplayName == SearchName
+            or P.Name == SearchName then
+
+            return P
+        end
+    end
+
+    return nil
+end
+
+local function CharacterState(H)
+    if not H then return "N/A" end
+    return tostring(H:GetState()):gsub("Enum.HumanoidStateType.", "")
+end
+
+local function HealthBar(H)
+    if not H or H.MaxHealth <= 0 then
+        return "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥 N/A"
+    end
+
+    local Ratio = math.clamp(H.Health / H.MaxHealth, 0, 1)
+    local Filled = math.floor(Ratio * 10 + 0.5)
+    local Empty = 10 - Filled
+    local Block
+
+    if Ratio > 0.60 then
+        Block = "🟩"
+    elseif Ratio > 0.30 then
+        Block = "🟨"
+    else
+        Block = "🟥"
+    end
+
+    return string.rep(Block, Filled)
+        .. string.rep("⬛", Empty)
+        .. " "
+        .. math.floor(H.Health)
+        .. "/"
+        .. math.floor(H.MaxHealth)
+end
+
+local function GetPing()
+    local Success, Value = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
+    end)
+    return Success and Value or "N/A"
+end
+
+local function GetPlayerFromModel(Model)
+    return Players:GetPlayerFromCharacter(Model)
+end
+
+local function IsNPC(Model)
+    return Model:IsA("Model")
+        and Model:FindFirstChildOfClass("Humanoid")
+        and not GetPlayerFromModel(Model)
+end
+
+--==============================================================
+-- WAYPOINT STORAGE
+--==============================================================
+
+local WaypointFile = "BANANIHUB_Waypoints_" .. tostring(game.PlaceId) .. ".json"
+
+local function EncodeCFrame(CF)
+    return {CF:GetComponents()}
+end
+
+local function DecodeCFrame(Data)
+    if type(Data) ~= "table" or #Data < 12 then return nil end
+    return CFrame.new(table.unpack(Data))
+end
+
+local function LoadWaypoints()
+    Waypoints = {}
+    if isfile and readfile and isfile(WaypointFile) then
+        local Success, Data = pcall(function()
+            return game:GetService("HttpService"):JSONDecode(readfile(WaypointFile))
+        end)
+        if Success and type(Data) == "table" then
+            Waypoints = Data
+        end
+    end
+end
+
+local function SaveWaypoints()
+    if writefile then
+        pcall(function()
+            local Encoded = game:GetService("HttpService"):JSONEncode(Waypoints)
+            writefile(WaypointFile, Encoded)
+        end)
+    end
+end
+
+local function GetWaypointNames()
+    local Names = {}
+    for Name in pairs(Waypoints) do
+        table.insert(Names, Name)
+    end
+    table.sort(Names)
+    return Names
+end
+
+local function RefreshWaypoints()
+    local Names = GetWaypointNames()
+    if WaypointDropdown then WaypointDropdown:Refresh(Names) end
+    if DeleteWaypointDropdown then DeleteWaypointDropdown:Refresh(Names) end
+end
+
+LoadWaypoints()
+
+--==============================================================
+-- FLY
+--==============================================================
+
+local function StopFly()
+    FlyEnabled = false
+    if FlyConnection then FlyConnection:Disconnect() FlyConnection = nil end
+
+    local R = Root()
+    if R then
+        local Velocity = R:FindFirstChild("BananiFlyVelocity")
+        local Gyro = R:FindFirstChild("BananiFlyGyro")
+        if Velocity then Velocity:Destroy() end
+        if Gyro then Gyro:Destroy() end
+    end
+end
+
+local function StartFly()
+    StopFly()
+    local R = Root()
+    if not R then return end
+
+    FlyEnabled = true
+    local Velocity = Instance.new("BodyVelocity")
+    Velocity.Name = "BananiFlyVelocity"
+    Velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    Velocity.Parent = R
+
+    local Gyro = Instance.new("BodyGyro")
+    Gyro.Name = "BananiFlyGyro"
+    Gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    Gyro.P = 90000
+    Gyro.Parent = R
+
+    FlyConnection = RunService.RenderStepped:Connect(function()
+        if not FlyEnabled or not R.Parent then StopFly() return end
+
+        local Direction = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then Direction += Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then Direction -= Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then Direction -= Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then Direction += Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then Direction += Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then Direction -= Vector3.yAxis end
+        if Direction.Magnitude > 0 then Direction = Direction.Unit end
+
+        Velocity.Velocity = Direction * FlySpeed
+        Gyro.CFrame = Camera.CFrame
+    end)
+end
+
+--==============================================================
+-- MOVEMENT / PLAYER STATE
+--==============================================================
+
+local function SetNoclip(Value)
+    NoclipEnabled = Value
+
+    if NoclipConnection then
+        NoclipConnection:Disconnect()
+        NoclipConnection = nil
+    end
+
+    if not Value then
+        for Part, OriginalCanCollide in pairs(Runtime.NoclipOriginalCollision) do
+            if Part and Part.Parent then
+                pcall(function()
+                    Part.CanCollide = OriginalCanCollide
+                end)
+            end
+        end
+
+        Runtime.NoclipOriginalCollision =
+            setmetatable({}, {__mode = "k"})
+        return
+    end
+
+    local Accumulator = 0
+
+    NoclipConnection = RunService.Stepped:Connect(function(_, Delta)
+        Accumulator += Delta or 0
+
+        if Accumulator < 0.15 then
+            return
+        end
+
+        Accumulator = 0
+
+        local C = Character()
+        if not C then return end
+
+        for _, Object in ipairs(C:GetDescendants()) do
+            if Object:IsA("BasePart") then
+                if Runtime.NoclipOriginalCollision[Object] == nil then
+                    Runtime.NoclipOriginalCollision[Object] =
+                        Object.CanCollide
+                end
+
+                if Object.CanCollide then
+                    Object.CanCollide = false
+                end
+            end
+        end
+    end)
+end
+
+local function UpdateMovement()
+    local H = Humanoid()
+    if not H then return end
+
+    local Defaults = Runtime.HumanoidDefaults[H]
+
+    if not Defaults then
+        Defaults = {
+            WalkSpeed = H.WalkSpeed,
+            JumpPower = H.JumpPower,
+            JumpHeight = H.JumpHeight,
+            AutoRotate = H.AutoRotate
+        }
+
+        Runtime.HumanoidDefaults[H] = Defaults
+    end
+
+    if FreezeEnabled then
+        H.WalkSpeed = 0
+        H.JumpPower = 0
+        H.JumpHeight = 0
+        H.AutoRotate = false
+        return
+    end
+
+    H.WalkSpeed =
+        FastWalkEnabled
+        and WalkSpeed
+        or Defaults.WalkSpeed
+
+    if HighJumpEnabled then
+        if H.UseJumpPower then
+            H.JumpPower = JumpPower
+        else
+            H.JumpHeight = math.max(Defaults.JumpHeight, JumpPower / 7)
+        end
+    else
+        H.JumpPower = Defaults.JumpPower
+        H.JumpHeight = Defaults.JumpHeight
+    end
+
+    H.AutoRotate = Defaults.AutoRotate
+end
+
+local function DisconnectFreeze()
+    if Runtime.FreezeConnection then
+        pcall(function()
+            Runtime.FreezeConnection:Disconnect()
+        end)
+
+        Runtime.FreezeConnection = nil
+    end
+end
+
+local function SetFreeze(Value)
+    FreezeEnabled = Value == true
+    DisconnectFreeze()
+
+    local H = Humanoid()
+    local R = Root()
+
+    if not FreezeEnabled then
+        local FrozenRoot = Runtime.FreezeRoot
+
+        if FrozenRoot and FrozenRoot.Parent then
+            FrozenRoot.AssemblyLinearVelocity = Vector3.zero
+            FrozenRoot.AssemblyAngularVelocity = Vector3.zero
+
+            if not FreecamEnabled and not Spectating then
+                FrozenRoot.Anchored =
+                    Runtime.FreezeAnchoredState == true
+            end
+        end
+
+        Runtime.FreezeRoot = nil
+        Runtime.FreezeCFrame = nil
+        Runtime.FreezeAnchoredState = nil
+
+        UpdateMovement()
+        return
+    end
+
+    if not H or not R then
+        FreezeEnabled = false
+        Notify("Freeze", "Your character is not ready.")
+        UpdateMovement()
+        return
+    end
+
+    Runtime.FreezeRoot = R
+    Runtime.FreezeCFrame = R.CFrame
+    Runtime.FreezeAnchoredState = R.Anchored
+
+    UpdateMovement()
+
+    R.AssemblyLinearVelocity = Vector3.zero
+    R.AssemblyAngularVelocity = Vector3.zero
+    R.Anchored = true
+
+    Runtime.FreezeConnection =
+        RunService.Heartbeat:Connect(function()
+            if not FreezeEnabled or Unloaded then
+                return
+            end
+
+            local CurrentHumanoid = Humanoid()
+            local CurrentRoot = Root()
+
+            if not CurrentHumanoid or not CurrentRoot then
+                return
+            end
+
+            if Runtime.FreezeRoot ~= CurrentRoot then
+                Runtime.FreezeRoot = CurrentRoot
+                Runtime.FreezeCFrame = CurrentRoot.CFrame
+                Runtime.FreezeAnchoredState =
+                    CurrentRoot.Anchored
+            end
+
+            CurrentHumanoid.WalkSpeed = 0
+            CurrentHumanoid.JumpPower = 0
+            CurrentHumanoid.JumpHeight = 0
+            CurrentHumanoid.AutoRotate = false
+
+            CurrentRoot.AssemblyLinearVelocity = Vector3.zero
+            CurrentRoot.AssemblyAngularVelocity = Vector3.zero
+            CurrentRoot.Anchored = true
+
+            if Runtime.FreezeCFrame then
+                CurrentRoot.CFrame = Runtime.FreezeCFrame
+            end
+        end)
+end
+
+local AutoJumpCooldown = false
+
+do
+    local Accumulator = 0
+
+    AutoJumpConnection = RunService.Heartbeat:Connect(function(Delta)
+        if not AutoJumpEnabled then
+            Accumulator = 0
+            return
+        end
+
+        Accumulator += Delta
+
+        if Accumulator < 0.10 then
+            return
+        end
+
+        Accumulator = 0
+
+        local H = Humanoid()
+        if not H or H.Health <= 0 then return end
+
+        if H.FloorMaterial ~= Enum.Material.Air
+            and not AutoJumpCooldown then
+
+            AutoJumpCooldown = true
+            H:ChangeState(Enum.HumanoidStateType.Jumping)
+
+            task.delay(0.25, function()
+                AutoJumpCooldown = false
+            end)
+        end
+    end)
+end
+
+TrackConnection(UserInputService.JumpRequest:Connect(function()
+    if InfiniteJumpEnabled then
+        local H = Humanoid()
+
+        if H and H.Health > 0 then
+            H:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end))
+
+do
+    local Accumulator = 0
+
+    TrackConnection(RunService.Heartbeat:Connect(function(Delta)
+        if not AntiFlingEnabled then
+            Accumulator = 0
+            return
+        end
+
+        Accumulator += Delta
+
+        if Accumulator < 0.10 then
+            return
+        end
+
+        Accumulator = 0
+
+        local R = Root()
+
+        if R
+            and (
+                R.AssemblyLinearVelocity.Magnitude > 250
+                or R.AssemblyAngularVelocity.Magnitude > 100
+            ) then
+
+            R.AssemblyLinearVelocity = Vector3.zero
+            R.AssemblyAngularVelocity = Vector3.zero
+        end
+    end))
+end
+
+TrackConnection(Player.Idled:Connect(function()
+    if AntiAFKEnabled then
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end
+end))
+
+--==============================================================
+-- LIGHTING / VISUALS
+--==============================================================
+
+local function CaptureLightingSnapshot()
+    Runtime.LightingSnapshot = {
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        FogEnd = Lighting.FogEnd,
+        GlobalShadows = Lighting.GlobalShadows,
+        EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+        EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+    }
+end
+
+local function RefreshLightingState()
+    local Base = Runtime.LightingSnapshot or OriginalLighting
+
+    if FullbrightEnabled then
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+    else
+        Lighting.Brightness = Base.Brightness
+        Lighting.ClockTime = Base.ClockTime
+        Lighting.FogEnd = Base.FogEnd
+    end
+
+    Lighting.GlobalShadows =
+        (FullbrightEnabled or LowGraphicsEnabled)
+        and false
+        or Base.GlobalShadows
+
+    Lighting.EnvironmentDiffuseScale =
+        LowGraphicsEnabled
+        and 0
+        or Base.EnvironmentDiffuseScale
+
+    Lighting.EnvironmentSpecularScale =
+        LowGraphicsEnabled
+        and 0
+        or Base.EnvironmentSpecularScale
+end
+
+local function SetFullbright(Value)
+    if Value
+        and not FullbrightEnabled
+        and not LowGraphicsEnabled then
+
+        CaptureLightingSnapshot()
+    end
+
+    FullbrightEnabled = Value
+    RefreshLightingState()
+
+    if not FullbrightEnabled and not LowGraphicsEnabled then
+        Runtime.LightingSnapshot = nil
+    end
+end
+
+local function ApplyHighlight(Model, Name, TargetPlayer)
+    if not Model or not Model.Parent then return end
+
+    local Highlight = Model:FindFirstChild(Name)
+
+    if not Highlight then
+        Highlight = Instance.new("Highlight")
+        Highlight.Name = Name
+        Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        Highlight.Parent = Model
+    end
+
+    local FillColor = ChamsFillColor
+    local OutlineColor = ChamsOutlineColor
+
+    if Name == "BananiPlayerChams"
+        and ChamsTeamColorsEnabled
+        and TargetPlayer
+        and TargetPlayer.Team then
+
+        FillColor = TargetPlayer.TeamColor.Color
+        OutlineColor = TargetPlayer.TeamColor.Color
+    end
+
+    Highlight.FillColor = FillColor
+    Highlight.OutlineColor = OutlineColor
+    Highlight.FillTransparency = ChamsFillTransparency
+    Highlight.OutlineTransparency = ChamsOutlineTransparency
+end
+
+local function ClearHighlights(Name)
+    for _, Object in ipairs(workspace:GetDescendants()) do
+        if Object:IsA("Highlight") and Object.Name == Name then Object:Destroy() end
+    end
+end
+
+local function SetChams(Value)
+    ChamsEnabled = Value
+
+    if ChamsConnection then
+        ChamsConnection:Disconnect()
+        ChamsConnection = nil
+    end
+
+    if not Value then
+        ClearHighlights("BananiPlayerChams")
+        return
+    end
+
+    local function Refresh()
+        for _, Target in ipairs(Players:GetPlayers()) do
+            if Target ~= Player and Target.Character then
+                ApplyHighlight(
+                    Target.Character,
+                    "BananiPlayerChams",
+                    Target
+                )
+            end
+        end
+    end
+
+    local Accumulator = 0
+    Refresh()
+
+    ChamsConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.50 then
+            return
+        end
+
+        Accumulator = 0
+        Refresh()
+    end)
+end
+
+local function SetNPCChams(Value)
+    NPCChamsEnabled = Value
+
+    if NPCChamsConnection then
+        NPCChamsConnection:Disconnect()
+        NPCChamsConnection = nil
+    end
+
+    if not Value then
+        ClearHighlights("BananiNPCChams")
+        return
+    end
+
+    local function TryApply(Object)
+        if not NPCChamsEnabled or not Object then return end
+
+        local Model
+
+        if Object:IsA("Model") then
+            Model = Object
+        else
+            Model = Object:FindFirstAncestorOfClass("Model")
+        end
+
+        if Model and IsNPC(Model) then
+            ApplyHighlight(Model, "BananiNPCChams")
+        end
+    end
+
+    task.spawn(function()
+        local Descendants = workspace:GetDescendants()
+
+        for Index, Object in ipairs(Descendants) do
+            if not NPCChamsEnabled or Unloaded then
+                return
+            end
+
+            if Object:IsA("Model")
+                or Object:IsA("Humanoid") then
+
+                TryApply(Object)
+            end
+
+            if Index % 250 == 0 then
+                task.wait()
+            end
+        end
+    end)
+
+    NPCChamsConnection = workspace.DescendantAdded:Connect(function(Object)
+        if NPCChamsEnabled
+            and (
+                Object:IsA("Model")
+                or Object:IsA("Humanoid")
+            ) then
+
+            task.defer(TryApply, Object)
+        end
+    end)
+end
+
+local function SetHitboxes(Value)
+    HitboxEnabled = Value
+
+    if HitboxConnection then
+        HitboxConnection:Disconnect()
+        HitboxConnection = nil
+    end
+
+    local function Clear()
+        for _, Target in ipairs(Players:GetPlayers()) do
+            local C = Target.Character
+            local R = C and C:FindFirstChild("HumanoidRootPart")
+            local Existing = R and R:FindFirstChild("BananiHitbox")
+
+            if Existing then
+                Existing:Destroy()
+            end
+        end
+    end
+
+    if not Value then
+        Clear()
+        return
+    end
+
+    local function Refresh()
+        for _, Target in ipairs(Players:GetPlayers()) do
+            if Target ~= Player and Target.Character then
+                local R =
+                    Target.Character:FindFirstChild("HumanoidRootPart")
+
+                if R and not R:FindFirstChild("BananiHitbox") then
+                    local Box = Instance.new("BoxHandleAdornment")
+                    Box.Name = "BananiHitbox"
+                    Box.Adornee = R
+                    Box.AlwaysOnTop = true
+                    Box.ZIndex = 10
+                    Box.Size = R.Size
+                    Box.Transparency = 0.5
+                    Box.Color3 = ChamsFillColor
+                    Box.Parent = R
+                end
+            end
+        end
+    end
+
+    local Accumulator = 0
+    Refresh()
+
+    HitboxConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.50 then
+            return
+        end
+
+        Accumulator = 0
+        Refresh()
+    end)
+end
+
+local function SetLowGraphics(Value)
+    if Value == LowGraphicsEnabled then
+        return
+    end
+
+    if Value
+        and not LowGraphicsEnabled
+        and not FullbrightEnabled then
+
+        CaptureLightingSnapshot()
+    end
+
+    LowGraphicsEnabled = Value
+    Runtime.PerformanceGeneration += 1
+
+    local Generation = Runtime.PerformanceGeneration
+
+    for _, Connection in ipairs(Runtime.PerformanceConnections) do
+        pcall(function()
+            Connection:Disconnect()
+        end)
+    end
+
+    Runtime.PerformanceConnections = {}
+
+    local function IsEffect(Object)
+        return Object:IsA("ParticleEmitter")
+            or Object:IsA("Trail")
+            or Object:IsA("Beam")
+            or Object:IsA("Smoke")
+            or Object:IsA("Fire")
+            or Object:IsA("Sparkles")
+            or Object:IsA("BloomEffect")
+            or Object:IsA("BlurEffect")
+            or Object:IsA("SunRaysEffect")
+            or Object:IsA("DepthOfFieldEffect")
+            or Object:IsA("ColorCorrectionEffect")
+    end
+
+    local function SaveOriginal(Object, Data)
+        if OriginalGraphics[Object] == nil then
+            OriginalGraphics[Object] = Data
+        end
+    end
+
+    local function ApplyObject(Object)
+        if not Value
+            or not Object
+            or not Object.Parent
+            or Generation ~= Runtime.PerformanceGeneration then
+
+            return
+        end
+
+        if Object:IsA("BasePart") then
+            SaveOriginal(Object, {
+                Material = Object.Material,
+                Reflectance = Object.Reflectance,
+                CastShadow = Object.CastShadow
+            })
+
+            pcall(function()
+                Object.Material = Enum.Material.SmoothPlastic
+                Object.Reflectance = 0
+                Object.CastShadow = false
+            end)
+
+        elseif IsEffect(Object) then
+            SaveOriginal(Object, {
+                Enabled = Object.Enabled
+            })
+
+            pcall(function()
+                Object.Enabled = false
+            end)
+        end
+    end
+
+    if not Value then
+        RefreshLightingState()
+
+        if not FullbrightEnabled then
+            Runtime.LightingSnapshot = nil
+        end
+
+        local SavedGraphics = OriginalGraphics
+        OriginalGraphics = setmetatable({}, {__mode = "k"})
+
+        task.spawn(function()
+            local Index = 0
+
+            for Object, Data in pairs(SavedGraphics) do
+                if Generation ~= Runtime.PerformanceGeneration then
+                    return
+                end
+
+                if Object and Object.Parent then
+                    for Property, OriginalValue in pairs(Data) do
+                        pcall(function()
+                            Object[Property] = OriginalValue
+                        end)
+                    end
+                end
+
+                Index += 1
+
+                if Index % 250 == 0 then
+                    task.wait()
+                end
+            end
+
+            if Generation == Runtime.PerformanceGeneration
+                and not Unloaded then
+
+                LogSuccess(
+                    "Performance Mode disabled and visuals restored"
+                )
+            end
+        end)
+
+        return
+    end
+
+    OriginalGraphics = setmetatable({}, {__mode = "k"})
+
+    RefreshLightingState()
+
+    table.insert(
+        Runtime.PerformanceConnections,
+        workspace.DescendantAdded:Connect(function(Object)
+            task.defer(ApplyObject, Object)
+        end)
+    )
+
+    table.insert(
+        Runtime.PerformanceConnections,
+        Lighting.ChildAdded:Connect(function(Object)
+            task.defer(ApplyObject, Object)
+        end)
+    )
+
+    task.spawn(function()
+        local DisabledCount = 0
+        local SimplifiedCount = 0
+        local Descendants = workspace:GetDescendants()
+
+        for Index, Object in ipairs(Descendants) do
+            if not LowGraphicsEnabled
+                or Generation ~= Runtime.PerformanceGeneration
+                or Unloaded then
+
+                return
+            end
+
+            if Object:IsA("BasePart") then
+                SimplifiedCount += 1
+            elseif IsEffect(Object) then
+                DisabledCount += 1
+            end
+
+            ApplyObject(Object)
+
+            if Index % 250 == 0 then
+                task.wait()
+            end
+        end
+
+        for _, Object in ipairs(Lighting:GetChildren()) do
+            ApplyObject(Object)
+        end
+
+        if Generation == Runtime.PerformanceGeneration then
+            LogSuccess(
+                "Performance Mode enabled: "
+                .. DisabledCount
+                .. " effects disabled, "
+                .. SimplifiedCount
+                .. " parts simplified"
+            )
+        end
+    end)
+end
+
+local StopSpectating
+
+local function SetCharacterLocked(Value)
+    local R = Root()
+    if not R then return end
+
+    if Value then
+        if Runtime.AnchorStates[R] == nil then
+            Runtime.AnchorStates[R] = R.Anchored
+        end
+
+        R.Anchored = true
+        R.AssemblyLinearVelocity = Vector3.zero
+        R.AssemblyAngularVelocity = Vector3.zero
+    else
+        local OriginalAnchored = Runtime.AnchorStates[R]
+
+        if OriginalAnchored ~= nil then
+            R.Anchored = OriginalAnchored
+            Runtime.AnchorStates[R] = nil
+        end
+    end
+end
+
+--==============================================================
+-- FREECAM
+--==============================================================
+
+local FreecamLooking = false
+
+local function DisconnectFreecamInputs()
+    for _, Connection in ipairs({
+        FreecamMouseConnection,
+        FreecamEndConnection,
+        FreecamChangedConnection
+    }) do
+        if Connection then
+            pcall(function()
+                Connection:Disconnect()
+            end)
+        end
+    end
+
+    FreecamMouseConnection = nil
+    FreecamEndConnection = nil
+    FreecamChangedConnection = nil
+end
+
+local function StopFreecam()
+    local WasEnabled = FreecamEnabled
+    FreecamEnabled = false
+    FreecamLooking = false
+
+    if FreecamConnection then
+        FreecamConnection:Disconnect()
+        FreecamConnection = nil
+    end
+
+    DisconnectFreecamInputs()
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    Camera.CameraType = Enum.CameraType.Custom
+    Camera.FieldOfView = FreecamOriginalFOV
+
+    local H = Humanoid()
+    if H and not Spectating then
+        Camera.CameraSubject = H
+    end
+
+    if not Spectating then
+        SetCharacterLocked(false)
+    end
+
+    if WasEnabled then
+        LogSuccess("Freecam disabled")
+    end
+end
+
+local function StartFreecam()
+    StopSpectating()
+    StopFreecam()
+
+    if not Root() then
+        Notify("Freecam", "Your character is unavailable.")
+        LogWarning("Freecam failed: character unavailable")
+        return
+    end
+
+    SetCharacterLocked(true)
+    FreecamEnabled = true
+    FreecamCFrame = Camera.CFrame
+    FreecamOriginalFOV = Camera.FieldOfView
+
+    local X, Y = FreecamCFrame:ToOrientation()
+    FreecamRotation = Vector2.new(X, Y)
+
+    Camera.CameraType = Enum.CameraType.Scriptable
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+
+    if FreecamCinematicEnabled then
+        Camera.FieldOfView = 50
+    end
+
+    FreecamMouseConnection = UserInputService.InputBegan:Connect(function(Input, Processed)
+        if Processed or not FreecamEnabled then return end
+
+        if Input.UserInputType == Enum.UserInputType.MouseButton2 then
+            FreecamLooking = true
+            UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+        end
+    end)
+
+    FreecamEndConnection = UserInputService.InputEnded:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton2 then
+            FreecamLooking = false
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
+    end)
+
+    FreecamChangedConnection = UserInputService.InputChanged:Connect(function(Input)
+        if not FreecamEnabled then return end
+
+        if Input.UserInputType == Enum.UserInputType.MouseMovement
+            and FreecamLooking then
+
+            local Sensitivity = FreecamCinematicEnabled and 0.0018 or 0.0028
+            FreecamRotation -=
+                Vector2.new(Input.Delta.Y, Input.Delta.X) * Sensitivity
+
+            FreecamRotation = Vector2.new(
+                math.clamp(FreecamRotation.X, -1.55, 1.55),
+                FreecamRotation.Y
+            )
+
+        elseif Input.UserInputType == Enum.UserInputType.MouseWheel then
+            local Direction = Input.Position.Z > 0 and 1 or -1
+            FreecamSpeed = math.clamp(
+                FreecamSpeed + Direction * FreecamScrollStep,
+                5,
+                250
+            )
+        end
+    end)
+
+    FreecamConnection = RunService.RenderStepped:Connect(function(Delta)
+        if not FreecamEnabled then return end
+
+        local Rotation = CFrame.fromOrientation(
+            FreecamRotation.X,
+            FreecamRotation.Y,
+            0
+        )
+
+        local Direction = Vector3.zero
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            Direction += Rotation.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            Direction -= Rotation.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            Direction -= Rotation.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            Direction += Rotation.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+            Direction += Vector3.yAxis
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+            Direction -= Vector3.yAxis
+        end
+
+        if Direction.Magnitude > 0 then
+            Direction = Direction.Unit
+        end
+
+        local SpeedMultiplier = FreecamCinematicEnabled and 0.45 or 1
+        local Position =
+            FreecamCFrame.Position
+            + Direction * FreecamSpeed * SpeedMultiplier * Delta
+
+        local TargetCFrame = CFrame.new(Position) * Rotation
+        FreecamCFrame = TargetCFrame
+
+        if FreecamSmoothEnabled or FreecamCinematicEnabled then
+            local Amount = FreecamCinematicEnabled
+                and math.min(FreecamSmoothness, 0.12)
+                or FreecamSmoothness
+
+            local Alpha =
+                1
+                - math.pow(
+                    1 - math.clamp(Amount, 0.02, 1),
+                    Delta * 60
+                )
+
+            Camera.CFrame = Camera.CFrame:Lerp(TargetCFrame, Alpha)
+        else
+            Camera.CFrame = TargetCFrame
+        end
+    end)
+
+    LogSuccess("Freecam enabled")
+end
+
+local function SaveFreecamPosition()
+    if not FreecamEnabled then
+        Notify("Freecam", "Enable Freecam first.")
+        LogWarning("Save camera failed: Freecam is disabled")
+        return
+    end
+
+    SavedFreecamCFrame = Camera.CFrame
+    Notify("Freecam", "Camera position saved.")
+    LogSuccess("Freecam position saved")
+end
+
+local function ReturnToSavedFreecamPosition()
+    if not SavedFreecamCFrame then
+        Notify("Freecam", "Save a camera position first.")
+        LogWarning("Return camera failed: no saved position")
+        return
+    end
+
+    if not FreecamEnabled then
+        StartFreecam()
+    end
+
+    FreecamCFrame = SavedFreecamCFrame
+    Camera.CFrame = SavedFreecamCFrame
+
+    local X, Y = SavedFreecamCFrame:ToOrientation()
+    FreecamRotation = Vector2.new(X, Y)
+
+    LogSuccess("Returned to saved Freecam position")
+end
+
+local function SetCameraShake(Value)
+    CameraShakeEnabled = Value
+    if CameraShakeConnection then CameraShakeConnection:Disconnect() CameraShakeConnection = nil end
+    if not Value then return end
+
+    CameraShakeConnection = RunService.RenderStepped:Connect(function()
+        if CameraShakeEnabled and not FreecamEnabled then
+            local Offset = Vector3.new(
+                (math.random() - 0.5) * CameraShakeStrength,
+                (math.random() - 0.5) * CameraShakeStrength,
+                0
+            )
+            Camera.CFrame = Camera.CFrame * CFrame.new(Offset)
+        end
+    end)
+end
+
+StopSpectating = function()
+    Spectating = false
+
+    if SpectatorConnection then
+        SpectatorConnection:Disconnect()
+        SpectatorConnection = nil
+    end
+
+    Camera.CameraType = Enum.CameraType.Custom
+
+    local H = Humanoid()
+    if H and not FreecamEnabled then
+        Camera.CameraSubject = H
+    end
+
+    if not FreecamEnabled then
+        SetCharacterLocked(false)
+    end
+
+    if SpectatorInfo then
+        local SelectedText = SpectatorTarget
+            and ("Selected: " .. SpectatorTarget.DisplayName .. " (@" .. SpectatorTarget.Name .. ")")
+            or "Select a player above."
+
+        SpectatorInfo:Set({
+            Title = "Spectator",
+            Content = SelectedText
+        })
+    end
+end
+
+local function StartSpectating(Target)
+    if not Target or Target == Player then
+        Notify("Spectator", "Select another player first.")
+        LogWarning("Spectate failed: select another player")
+        return
+    end
+
+    StopFreecam()
+    StopSpectating()
+    SetCharacterLocked(true)
+
+    SpectatorTarget = Target
+    Spectating = true
+    LogSuccess("Spectating " .. Target.DisplayName)
+
+    local InitialCharacter = Target.Character
+    local InitialHumanoid =
+        InitialCharacter
+        and InitialCharacter:FindFirstChildOfClass("Humanoid")
+
+    if InitialHumanoid then
+        Camera.CameraType = Enum.CameraType.Custom
+        Camera.CameraSubject = InitialHumanoid
+    end
+
+    local Accumulator = 0.25
+
+    SpectatorConnection = RunService.Heartbeat:Connect(function(Delta)
+        if not Spectating
+            or not SpectatorTarget
+            or not SpectatorTarget.Parent then
+
+            StopSpectating()
+            return
+        end
+
+        Accumulator += Delta
+
+        if Accumulator < 0.25 then
+            return
+        end
+
+        Accumulator = 0
+
+        local TargetCharacter = SpectatorTarget.Character
+        local TargetHumanoid =
+            TargetCharacter
+            and TargetCharacter:FindFirstChildOfClass("Humanoid")
+        local TargetRoot =
+            TargetCharacter
+            and TargetCharacter:FindFirstChild("HumanoidRootPart")
+        local MyRoot = Root()
+
+        if TargetHumanoid then
+            Camera.CameraType = Enum.CameraType.Custom
+            Camera.CameraSubject = TargetHumanoid
+        end
+
+        if SpectatorInfo then
+            local Distance =
+                MyRoot
+                and TargetRoot
+                and math.floor(
+                    (MyRoot.Position - TargetRoot.Position).Magnitude
+                )
+                or 0
+
+            local Health =
+                TargetHumanoid
+                and (
+                    math.floor(TargetHumanoid.Health)
+                    .. "/"
+                    .. math.floor(TargetHumanoid.MaxHealth)
+                )
+                or "N/A"
+
+            local Speed =
+                TargetHumanoid
+                and math.floor(TargetHumanoid.WalkSpeed)
+                or "N/A"
+
+            SpectatorInfo:Set({
+                Title = "👀 " .. SpectatorTarget.DisplayName,
+                Content =
+                    "Username: @" .. SpectatorTarget.Name
+                    .. "\nHealth: " .. Health
+                    .. "\nDistance: " .. tostring(Distance) .. " studs"
+                    .. "\nState: " .. CharacterState(TargetHumanoid)
+                    .. "\nWalkSpeed: " .. tostring(Speed)
+                    .. "\nAccount Age: "
+                    .. tostring(SpectatorTarget.AccountAge)
+                    .. " days"
+                    .. "\nUser ID: "
+                    .. tostring(SpectatorTarget.UserId)
+            })
+        end
+    end)
+end
+
+local function GetSpectatorCandidates()
+    local List = {}
+
+    for _, Target in ipairs(Players:GetPlayers()) do
+        if Target ~= Player then
+            table.insert(List, Target)
+        end
+    end
+
+    table.sort(List, function(A, B)
+        local AName = string.lower(A.DisplayName .. A.Name)
+        local BName = string.lower(B.DisplayName .. B.Name)
+        return AName < BName
+    end)
+
+    return List
+end
+
+local function SwitchSpectator(Direction)
+    local Candidates = GetSpectatorCandidates()
+
+    if #Candidates == 0 then
+        StopSpectating()
+        Notify("Spectator", "No other players are available.")
+        return
+    end
+
+    local CurrentIndex = 0
+
+    for Index, Target in ipairs(Candidates) do
+        if Target == SpectatorTarget then
+            CurrentIndex = Index
+            break
+        end
+    end
+
+    local NextIndex
+
+    if Direction < 0 then
+        NextIndex = CurrentIndex > 1
+            and CurrentIndex - 1
+            or #Candidates
+    else
+        NextIndex = CurrentIndex < #Candidates
+            and CurrentIndex + 1
+            or 1
+    end
+
+    SpectatorTarget = Candidates[NextIndex]
+
+    if Spectating then
+        StartSpectating(SpectatorTarget)
+    elseif SpectatorInfo then
+        SpectatorInfo:Set({
+            Title = "Spectator",
+            Content =
+                "Selected: "
+                .. SpectatorTarget.DisplayName
+                .. " (@"
+                .. SpectatorTarget.Name
+                .. ")"
+        })
+    end
+end
+
+--==============================================================
+-- PLAYER LIST REFRESH
+--==============================================================
+
+local function RefreshPlayers()
+    local Names = GetDisplayNames()
+
+    if PlayerDropdown then
+        PlayerDropdown:Refresh(Names)
+    end
+
+    if SpectatorDropdown then
+        SpectatorDropdown:Refresh(Names)
+    end
+
+    if Runtime.RefreshStatsPlayers then
+        Runtime.RefreshStatsPlayers()
+    end
+
+    if SelectedPlayer and not FindPlayerByDisplayName(SelectedPlayer) then
+        SelectedPlayer = nil
+    end
+
+    if SpectatorTarget and not SpectatorTarget.Parent then
+        SpectatorTarget = nil
+    end
+end
+
+local function SchedulePlayerRefresh()
+    if Runtime.RefreshPlayersPending then
+        return
+    end
+
+    Runtime.RefreshPlayersPending = true
+
+    task.defer(function()
+        Runtime.RefreshPlayersPending = false
+
+        if not Unloaded then
+            RefreshPlayers()
+        end
+    end)
+end
+
+TrackConnection(Players.PlayerAdded:Connect(function(Target)
+    SchedulePlayerRefresh()
+    LogInformation(
+        Target.DisplayName .. " joined the server.",
+        "Server"
+    )
+end))
+
+TrackConnection(Players.PlayerRemoving:Connect(function(Target)
+    local WasSpectated = Spectating and SpectatorTarget == Target
+
+    AddActionLog(
+        "Information",
+        "Player left: "
+            .. Target.DisplayName
+            .. " (@"
+            .. Target.Name
+            .. ")",
+        "Spectator"
+    )
+
+    SchedulePlayerRefresh()
+
+    if WasSpectated then
+        task.defer(function()
+            if Unloaded then return end
+
+            SpectatorTarget = nil
+            local Candidates = GetSpectatorCandidates()
+
+            if #Candidates > 0 then
+                SpectatorTarget = Candidates[1]
+                StartSpectating(SpectatorTarget)
+                LogInformation(
+                    "Automatically switched to "
+                    .. SpectatorTarget.DisplayName,
+                    "Spectator"
+                )
+            else
+                StopSpectating()
+                Notify(
+                    "Spectator",
+                    "The player left and nobody else is available."
+                )
+            end
+        end)
+    end
+end))
+
+
+--==============================================================
+-- EXTRA PLAYER PROTECTION / MOVEMENT
+--==============================================================
+
+local LastSafeCFrame = nil
+local AntiVoidHeight = -50
+
+local function SetAntiVoid(Value)
+    AntiVoidEnabled = Value
+
+    if AntiVoidConnection then
+        AntiVoidConnection:Disconnect()
+        AntiVoidConnection = nil
+    end
+
+    if not Value then return end
+
+    local Accumulator = 0
+
+    AntiVoidConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.10 then
+            return
+        end
+
+        Accumulator = 0
+
+        local R = Root()
+        local H = Humanoid()
+
+        if not R or not H or H.Health <= 0 then
+            return
+        end
+
+        if H.FloorMaterial ~= Enum.Material.Air
+            and R.Position.Y > AntiVoidHeight + 15 then
+
+            LastSafeCFrame = R.CFrame
+
+        elseif R.Position.Y <= AntiVoidHeight
+            and LastSafeCFrame then
+
+            R.AssemblyLinearVelocity = Vector3.zero
+            R.AssemblyAngularVelocity = Vector3.zero
+            R.CFrame = LastSafeCFrame + Vector3.new(0, 4, 0)
+
+            Notify(
+                "Anti Void",
+                "Returned you to your last safe position."
+            )
+        end
+    end)
+end
+
+local function SetAntiRagdoll(Value)
+    AntiRagdollEnabled = Value
+
+    if AntiRagdollConnection then
+        AntiRagdollConnection:Disconnect()
+        AntiRagdollConnection = nil
+    end
+
+    if not Value then return end
+
+    local Accumulator = 0
+
+    AntiRagdollConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.10 then
+            return
+        end
+
+        Accumulator = 0
+
+        local H = Humanoid()
+
+        if not H or H.Health <= 0 then
+            return
+        end
+
+        H.PlatformStand = false
+        H.Sit = false
+
+        local State = H:GetState()
+
+        if State == Enum.HumanoidStateType.Ragdoll
+            or State == Enum.HumanoidStateType.FallingDown
+            or State == Enum.HumanoidStateType.Physics then
+
+            H:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+    end)
+end
+
+local function SetSpiderClimb(Value)
+    SpiderClimbEnabled = Value
+
+    if SpiderClimbConnection then
+        SpiderClimbConnection:Disconnect()
+        SpiderClimbConnection = nil
+    end
+
+    if not Value then return end
+
+    local Accumulator = 0
+    local Params = RaycastParams.new()
+    Params.FilterType = Enum.RaycastFilterType.Exclude
+
+    SpiderClimbConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.05 then
+            return
+        end
+
+        Accumulator = 0
+
+        local R = Root()
+        local H = Humanoid()
+        local C = Character()
+
+        if not R or not H or not C then
+            return
+        end
+
+        Params.FilterDescendantsInstances = {C}
+
+        local Result = workspace:Raycast(
+            R.Position,
+            R.CFrame.LookVector * 3.5,
+            Params
+        )
+
+        if Result
+            and UserInputService:IsKeyDown(Enum.KeyCode.W) then
+
+            R.AssemblyLinearVelocity = Vector3.new(
+                R.AssemblyLinearVelocity.X,
+                32,
+                R.AssemblyLinearVelocity.Z
+            )
+
+            H:ChangeState(Enum.HumanoidStateType.Climbing)
+        end
+    end)
+end
+
+--==============================================================
+-- BOX / HEALTH ESP
+--==============================================================
+
+local function RemoveESPFromCharacter(CharacterModel)
+    if not CharacterModel then return end
+
+    local RootPart = CharacterModel:FindFirstChild("HumanoidRootPart")
+    if RootPart then
+        local Existing = RootPart:FindFirstChild("BananiESP")
+        if Existing then Existing:Destroy() end
+    end
+end
+
+local function UpdatePlayerESP(Target)
+    if Target == Player then return end
+
+    local C = Target.Character
+    local R = C and C:FindFirstChild("HumanoidRootPart")
+    local H = C and C:FindFirstChildOfClass("Humanoid")
+
+    if not C or not R or not H then
+        RemoveESPFromCharacter(C)
+        return
+    end
+
+    if not BoxESPEnabled and not HealthESPEnabled then
+        RemoveESPFromCharacter(C)
+        return
+    end
+
+    local Billboard = R:FindFirstChild("BananiESP")
+
+    if not Billboard then
+        Billboard = Instance.new("BillboardGui")
+        Billboard.Name = "BananiESP"
+        Billboard.AlwaysOnTop = true
+        Billboard.Size = UDim2.fromOffset(70, 100)
+        Billboard.StudsOffset = Vector3.new(0, 0.5, 0)
+        Billboard.Adornee = R
+        Billboard.Parent = R
+
+        local Box = Instance.new("Frame")
+        Box.Name = "Box"
+        Box.AnchorPoint = Vector2.new(0.5, 0.5)
+        Box.Position = UDim2.fromScale(0.5, 0.5)
+        Box.Size = UDim2.fromOffset(38, 76)
+        Box.BackgroundTransparency = 1
+        Box.Parent = Billboard
+
+        local Stroke = Instance.new("UIStroke")
+        Stroke.Name = "BoxStroke"
+        Stroke.Thickness = 1
+        Stroke.Color = Color3.fromRGB(255, 221, 0)
+        Stroke.Parent = Box
+
+        local HealthBack = Instance.new("Frame")
+        HealthBack.Name = "HealthBack"
+        HealthBack.Position = UDim2.new(0, 10, 0, 12)
+        HealthBack.Size = UDim2.fromOffset(3, 76)
+        HealthBack.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        HealthBack.BorderSizePixel = 0
+        HealthBack.Parent = Billboard
+
+        local HealthFill = Instance.new("Frame")
+        HealthFill.Name = "HealthFill"
+        HealthFill.AnchorPoint = Vector2.new(0, 1)
+        HealthFill.Position = UDim2.fromScale(0, 1)
+        HealthFill.Size = UDim2.fromScale(1, 1)
+        HealthFill.BorderSizePixel = 0
+        HealthFill.Parent = HealthBack
+
+        local HealthText = Instance.new("TextLabel")
+        HealthText.Name = "HealthText"
+        HealthText.BackgroundTransparency = 1
+        HealthText.Position = UDim2.new(0, 0, 1, -12)
+        HealthText.Size = UDim2.new(1, 0, 0, 12)
+        HealthText.Font = Enum.Font.GothamBold
+        HealthText.TextSize = 9
+        HealthText.TextColor3 = Color3.new(1, 1, 1)
+        HealthText.TextStrokeTransparency = 0.3
+        HealthText.Parent = Billboard
+    end
+
+    local Box = Billboard:FindFirstChild("Box")
+    local HealthBack = Billboard:FindFirstChild("HealthBack")
+    local HealthText = Billboard:FindFirstChild("HealthText")
+
+    if Box then Box.Visible = BoxESPEnabled end
+    if HealthBack then HealthBack.Visible = HealthESPEnabled end
+    if HealthText then HealthText.Visible = HealthESPEnabled end
+
+    if HealthESPEnabled and HealthBack and HealthText then
+        local Ratio = math.clamp(H.Health / math.max(H.MaxHealth, 1), 0, 1)
+        local Fill = HealthBack:FindFirstChild("HealthFill")
+
+        if Fill then
+            Fill.Size = UDim2.fromScale(1, Ratio)
+            Fill.BackgroundColor3 =
+                Color3.fromRGB(255, 60, 60):Lerp(
+                    Color3.fromRGB(70, 255, 100),
+                    Ratio
+                )
+        end
+
+        HealthText.Text =
+            Target.DisplayName
+            .. "  "
+            .. math.floor(H.Health)
+            .. "/"
+            .. math.floor(H.MaxHealth)
+    end
+end
+
+local function SetPlayerESP()
+    if ESPConnection then
+        ESPConnection:Disconnect()
+        ESPConnection = nil
+    end
+
+    if not BoxESPEnabled and not HealthESPEnabled then
+        for _, Target in ipairs(Players:GetPlayers()) do
+            RemoveESPFromCharacter(Target.Character)
+        end
+        return
+    end
+
+    local Accumulator = 0
+
+    ESPConnection = RunService.Heartbeat:Connect(function(Delta)
+        Accumulator += Delta
+
+        if Accumulator < 0.10 then
+            return
+        end
+
+        Accumulator = 0
+
+        for _, Target in ipairs(Players:GetPlayers()) do
+            UpdatePlayerESP(Target)
+        end
+    end)
+end
+
+
+local function SafeFeatureCallback(Feature, Callback)
+    return function(...)
+        local Arguments = table.pack(...)
+
+        local Success, Result = xpcall(function()
+            return Callback(table.unpack(Arguments, 1, Arguments.n))
+        end, function(ErrorMessage)
+            local Message = tostring(ErrorMessage)
+            local Line =
+                tonumber(Message:match(":(%d+):"))
+                or tonumber(Message:match("line%s+(%d+)"))
+
+            AddActionLog(
+                "Error",
+                Message,
+                tostring(Feature or "Unknown"),
+                Line
+            )
+
+            Notify(
+                "Feature Error",
+                tostring(Feature or "Unknown")
+                .. " failed. Check the executor output."
+            )
+
+            return Message
+        end)
+
+        if not Success then
+            return nil
+        end
+
+        return Result
+    end
+end
+
+local function ProtectTabCallbacks(Tab)
+    if type(Tab) ~= "table" or Tab.__BananiProtected then
+        return Tab
+    end
+
+    Tab.__BananiProtected = true
+
+    for _, MethodName in ipairs({
+        "CreateButton",
+        "CreateToggle",
+        "CreateSlider",
+        "CreateDropdown",
+        "CreateInput",
+        "CreateKeybind",
+        "CreateColorPicker"
+    }) do
+        local Original = Tab[MethodName]
+
+        if type(Original) == "function" then
+            Tab[MethodName] = function(Self, Options, ...)
+                if type(Options) == "table"
+                    and type(Options.Callback) == "function" then
+
+                    Options.Callback = SafeFeatureCallback(
+                        Options.Name or MethodName,
+                        Options.Callback
+                    )
+                end
+
+                return Original(Self, Options, ...)
+            end
+        end
+    end
+
+    return Tab
+end
+
+do
+    local OriginalCreateTab = Window.CreateTab
+
+    if type(OriginalCreateTab) == "function" then
+        Window.CreateTab = function(Self, ...)
+            return ProtectTabCallbacks(
+                OriginalCreateTab(Self, ...)
+            )
+        end
+    end
+end
+
+--==============================================================
+-- HOME
+--==============================================================
+
+do
+    local HomeTab = Window:CreateTab("Home", 4483362458)
+
+    Dashboard = HomeTab:CreateParagraph({
+        Title = "🍌 BANANIHUB 🍌",
+        Content = "Loading..."
+    })
+
+    local SessionStart = os.clock()
+    local FrameCount = 0
+    local LastFPSUpdate = os.clock()
+    local CurrentFPS = 0
+
+    TrackConnection(RunService.RenderStepped:Connect(function()
+        FrameCount += 1
+    end))
+
+    do
+        local Accumulator = 1
+
+        StatusConnection = RunService.Heartbeat:Connect(function(Delta)
+            Accumulator += Delta
+
+            if Accumulator < 1 then
+                return
+            end
+
+            Accumulator = 0
+
+            local Now = os.clock()
+            local Elapsed = math.max(Now - LastFPSUpdate, 0.001)
+            CurrentFPS = math.floor(FrameCount / Elapsed)
+            FrameCount = 0
+            LastFPSUpdate = Now
+
+            local H = Humanoid()
+            local SessionSeconds = math.floor(Now - SessionStart)
+            local Minutes = math.floor(SessionSeconds / 60)
+            local Seconds = SessionSeconds % 60
+
+            if Dashboard then
+                Dashboard:Set({
+                    Title = "🍌 BANANIHUB 🍌",
+                    Content =
+                        "👤 Player: " .. Player.DisplayName
+                        .. "\n❤️ HP: " .. HealthBar(H)
+                        .. "\n🎞️ FPS: " .. tostring(CurrentFPS)
+                        .. "\n📶 Ping: " .. GetPing()
+                        .. "\n🧍 State: " .. CharacterState(H)
+                        .. "\n👥 Players: "
+                        .. #Players:GetPlayers()
+                        .. "/"
+                        .. Players.MaxPlayers
+                        .. "\n⏱️ Session: "
+                        .. string.format("%02d:%02d", Minutes, Seconds)
+                })
+            end
+        end)
+    end
+
+    HomeTab:CreateSection("🎮 Current Game")
+
+    do
+        local Success, Label = pcall(function()
+            return HomeTab:CreateLabel(
+                tostring(PlaceInfo.Name),
+                GetExperienceThumbnail()
+            )
+        end)
+
+        if Success and Label then
+            Runtime.HomeGameLabel = Label
+        end
+    end
+
+    Runtime.HomeExperienceParagraph = HomeTab:CreateParagraph({
+        Title = "Game Details",
+        Content =
+            "Creator: " .. tostring(PlaceInfo.Creator)
+            .. "\nBananiHub Version: " .. BANANIHUB_VERSION
+    })
+
+    HomeTab:CreateButton({
+        Name = "🔗 Copy Game Link",
+        Callback = function()
+            local JoinLink =
+                "https://www.roblox.com/games/start?placeId="
+                .. tostring(game.PlaceId)
+
+            local CurrentServerId = tostring(game.JobId or "")
+
+            if CurrentServerId ~= "" then
+                JoinLink =
+                    JoinLink
+                    .. "&gameInstanceId="
+                    .. HttpService:UrlEncode(CurrentServerId)
+            end
+
+            Runtime.CopyValue("Current server link", JoinLink)
+        end
+    })
+
+    ServerInformation = HomeTab:CreateParagraph({
+        Title = "🌐 Current Server",
+        Content = "Loading..."
+    })
+
+    Runtime.RefreshServerInfo = function()
+        if not ServerInformation then return end
+
+        pcall(function()
+            ServerInformation:Set({
+                Title = "🌐 Current Server",
+                Content =
+                    "Players: "
+                    .. #Players:GetPlayers()
+                    .. "/"
+                    .. Players.MaxPlayers
+                    .. "\nPing: " .. GetPing()
+                    .. "\nServer ID: "
+                    .. tostring(game.JobId)
+                    .. "\nStatus: Connected"
+            })
+        end)
+    end
+
+    Runtime.RefreshServerInfo()
+
+    do
+        local Accumulator = 2
+
+        ServerStatusConnection =
+            RunService.Heartbeat:Connect(function(Delta)
+                if Unloaded then return end
+
+                Accumulator += Delta
+
+                if Accumulator < 2 then
+                    return
+                end
+
+                Accumulator = 0
+                Runtime.RefreshServerInfo()
+            end)
+    end
+
+    RefreshExperienceParagraphs()
+
+    HomeTab:CreateSection("⭐ Favorites")
+
+    Runtime.HomeFavoritesParagraph = HomeTab:CreateParagraph({
+        Title = "⭐ Favorites",
+        Content = "None selected"
+    })
+
+    Runtime.UpdatePreferenceDisplays()
+
+    HomeTab:CreateSection("🚪 Join Server")
+
+    Runtime.ServerSelectionParagraph =
+        HomeTab:CreateParagraph({
+            Title = "Selected Server",
+            Content =
+                "Players: Unknown"
+                .. "\nPing estimate: Unknown"
+                .. "\nServer ID: Unknown"
+                .. "\nStatus: Waiting"
+        })
+
+    HomeTab:CreateToggle({
+        Name = "Avoid Current Server",
+        CurrentValue = true,
+        Flag = "Server_AvoidCurrent",
+        Callback = function(Value)
+            Runtime.AvoidCurrentServer = Value
+        end
+    })
+
+    HomeTab:CreateToggle({
+        Name = "Avoid Previously Visited Servers",
+        CurrentValue = true,
+        Flag = "Server_AvoidVisited",
+        Callback = function(Value)
+            Runtime.AvoidVisitedServers = Value
+        end
+    })
+
+    HomeTab:CreateParagraph({
+        Title = "Before Joining",
+        Content =
+            "After Roblox changes servers, run BananiHub "
+            .. "again from your normal loader."
+    })
+
+    HomeTab:CreateButton({
+        Name = "🔄 Rejoin Current Server",
+        Callback = function()
+            if Runtime.ServerRequestBusy then
+                Notify(
+                    "Server",
+                    "A server action is already running."
+                )
+                return
+            end
+
+            Runtime.ServerRequestBusy = true
+
+            task.spawn(function()
+                local Success, ErrorMessage = pcall(function()
+                    TeleportService:TeleportToPlaceInstance(
+                        game.PlaceId,
+                        game.JobId,
+                        Player
+                    )
+                end)
+
+                Runtime.ServerRequestBusy = false
+
+                if not Success then
+                    Notify(
+                        "Rejoin",
+                        "Teleport failed: "
+                        .. tostring(ErrorMessage)
+                    )
+                    LogWarning(
+                        "Rejoin failed: "
+                        .. tostring(ErrorMessage),
+                        "Server"
+                    )
+                else
+                    LogSuccess(
+                        "Rejoining current server",
+                        "Server"
+                    )
+                end
+            end)
+        end
+    })
+
+    HomeTab:CreateButton({
+        Name = "🎲 Join Random Server",
+        Callback = function()
+            if Runtime.ServerHop then
+                Runtime.ServerHop("Random")
+            else
+                Notify("Server", "Server tools are still loading.")
+            end
+        end
+    })
+
+    HomeTab:CreateButton({
+        Name = "👤 Join Smallest Server",
+        Callback = function()
+            if Runtime.ServerHop then
+                Runtime.ServerHop("Smallest")
+            else
+                Notify("Server", "Server tools are still loading.")
+            end
+        end
+    })
+
+    HomeTab:CreateButton({
+        Name = "👥 Join Largest Available Server",
+        Callback = function()
+            if Runtime.ServerHop then
+                Runtime.ServerHop("Largest")
+            else
+                Notify("Server", "Server tools are still loading.")
+            end
+        end
+    })
+
+    HomeTab:CreateSection("📜 Changelog")
+
+    HomeTab:CreateParagraph({
+        Title = "v2.3 • Final",
+        Content =
+            "• Moved server information and joining controls into Home"
+            .. "\n• Removed the Server tab and unused search panel"
+            .. "\n• Placed Copy Game Link directly under Current Game"
+            .. "\n• Changed button outlines to dark"
+            .. "\n• Improved the Chams settings expansion"
+            .. "\n• Completed a final organization and validation pass"
+    })
+
+    HomeTab:CreateParagraph({
+        Title = "v2.2",
+        Content =
+            "• Removed the old debugging tab and reduced logging overhead"
+            .. "\n• Placed the game artwork directly beside the game name"
+            .. "\n• Refined the gray theme with clean banana accents"
+            .. "\n• Removed unused teleport-history state"
+    })
+
+    HomeTab:CreateParagraph({
+        Title = "v2.1",
+        Content =
+            "• Added spectator previous/next and automatic switching"
+            .. "\n• Added player-left system logs"
+            .. "\n• Added server selection details and visited-server filters"
+            .. "\n• Added staged loading, protected callbacks, Compact Mode, and Master Reset"
+            .. "\n• Removed Previous Position teleport"
+    })
+
+    HomeTab:CreateParagraph({
+        Title = "v2.0",
+        Content =
+            "• Added protected feature callbacks and structured internal error reports"
+            .. "\n• Moved Camera controls into Spectator"
+            .. "\n• Moved Performance controls into Visuals"
+            .. "\n• Moved Changelog into Home"
+            .. "\n• Added user preferences and Favorites"
+            .. "\n• Improved config overwrite and organization"
+    })
+end
+
+--==============================================================
+-- PLAYER TAB
+--==============================================================
+
+do
+local PlayerTab = Window:CreateTab("Player", 4483362458)
+
+PlayerTab:CreateParagraph({
+    Title = "👤 Player",
+    Content =
+        "Character, movement, and protection controls are organized here."
+        .. "\nMovement is part of the Player tab—there is no separate Movement tab."
+})
+
+PlayerTab:CreateSection("👤 Character")
+PlayerTab:CreateButton({
+    Name = "🔄 Respawn",
+    Callback = function()
+        local H = Humanoid()
+        if H then H.Health = 0 end
+    end
+})
+
+PlayerTab:CreateSection("⚡ Movement")
+PlayerTab:CreateToggle({
+    Name = "✈️ Fly",
+    Flag = "Player_Fly",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then StartFly() else StopFly() end
+    end
+})
+PlayerTab:CreateSlider({
+    Name = "Fly Speed",
+    Flag = "Player_FlySpeed",
+    Range = {10, 150},
+    Increment = 5,
+    CurrentValue = 50,
+    Callback = function(Value)
+        FlySpeed = Value
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "🚧 Noclip",
+    Flag = "Player_Noclip",
+    CurrentValue = false,
+    Callback = SetNoclip
+})
+PlayerTab:CreateToggle({
+    Name = "🕷️ Spider Climb",
+    Flag = "Player_SpiderClimb",
+    CurrentValue = false,
+    Callback = SetSpiderClimb
+})
+PlayerTab:CreateToggle({
+    Name = "⚡ Fast Walk",
+    Flag = "Player_FastWalk",
+    CurrentValue = false,
+    Callback = function(Value)
+        FastWalkEnabled = Value
+        UpdateMovement()
+    end
+})
+PlayerTab:CreateSlider({
+    Name = "Walk Speed",
+    Flag = "Player_WalkSpeed",
+    Range = {16, 100},
+    Increment = 1,
+    CurrentValue = 16,
+    Callback = function(Value)
+        WalkSpeed = Value
+        UpdateMovement()
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "🦘 High Jump",
+    Flag = "Player_HighJump",
+    CurrentValue = false,
+    Callback = function(Value)
+        HighJumpEnabled = Value
+        UpdateMovement()
+    end
+})
+PlayerTab:CreateSlider({
+    Name = "Jump Power",
+    Flag = "Player_JumpPower",
+    Range = {50, 150},
+    Increment = 5,
+    CurrentValue = 50,
+    Callback = function(Value)
+        JumpPower = Value
+        UpdateMovement()
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "♾️ Infinite Jump",
+    Flag = "Player_InfiniteJump",
+    CurrentValue = false,
+    Callback = function(Value)
+        InfiniteJumpEnabled = Value
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "🤸 Auto Jump",
+    Flag = "Player_AutoJump",
+    CurrentValue = false,
+    Callback = function(Value)
+        AutoJumpEnabled = Value
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "🧊 Freeze",
+    Flag = "Player_Freeze",
+    CurrentValue = false,
+    Callback = SetFreeze
+})
+
+PlayerTab:CreateSection("🛡️ Protection")
+PlayerTab:CreateToggle({
+    Name = "🕳️ Anti Void",
+    Flag = "Player_AntiVoid",
+    CurrentValue = false,
+    Callback = SetAntiVoid
+})
+PlayerTab:CreateToggle({
+    Name = "🧍 Anti Ragdoll",
+    Flag = "Player_AntiRagdoll",
+    CurrentValue = false,
+    Callback = SetAntiRagdoll
+})
+PlayerTab:CreateToggle({
+    Name = "🛡️ Anti-Fling",
+    Flag = "Player_AntiFling",
+    CurrentValue = false,
+    Callback = function(Value)
+        AntiFlingEnabled = Value
+    end
+})
+PlayerTab:CreateToggle({
+    Name = "💤 Anti-AFK",
+    Flag = "Player_AntiAFK",
+    CurrentValue = false,
+    Callback = function(Value)
+        AntiAFKEnabled = Value
+    end
+})
+
+PlayerTab:CreateButton({
+    Name = "♾️InfYield",
+    Callback = function()
+   loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+    end
+})
+
+end
+
+local TeleportToolName = "Banani Teleporter"
+
+local function RemoveTeleportTool()
+    local Backpack = Player:FindFirstChildOfClass("Backpack")
+    local C = Character()
+
+    local BackpackTool = Backpack and Backpack:FindFirstChild(TeleportToolName)
+    local EquippedTool = C and C:FindFirstChild(TeleportToolName)
+
+    if BackpackTool then BackpackTool:Destroy() end
+    if EquippedTool then EquippedTool:Destroy() end
+end
+
+local function GiveTeleportTool()
+    local Backpack = Player:FindFirstChildOfClass("Backpack")
+
+    if not Backpack then
+        Notify("Teleport Tool", "Your Backpack is not ready.")
+        return
+    end
+
+    RemoveTeleportTool()
+
+    local Tool = Instance.new("Tool")
+    Tool.Name = TeleportToolName
+    Tool.ToolTip = "Click anywhere to teleport"
+    Tool.RequiresHandle = false
+    Tool.CanBeDropped = false
+    Tool.Parent = Backpack
+
+    local Mouse = Player:GetMouse()
+    local Cooldown = false
+
+    Tool.Activated:Connect(function()
+        if Cooldown then return end
+
+        local R = Root()
+        if not R or not Mouse.Hit then return end
+
+        Cooldown = true
+        R.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
+
+        task.delay(0.25, function()
+            Cooldown = false
+        end)
+    end)
+
+    Notify("🍌 Teleport Tool", "Equip Banani Teleporter and click anywhere.")
+end
+
+--==============================================================
+-- TELEPORT TAB
+--==============================================================
+
+do
+local TeleportTab = Window:CreateTab("Teleport", 4483362458)
+
+TeleportTab:CreateParagraph({
+    Title = "📍 Teleport & Waypoints",
+    Content =
+        "Teleport tools, player teleporting, temporary positions, and saved waypoints are organized here."
+})
+
+TeleportTab:CreateSection("🖱️ Banani Teleporter")
+TeleportTab:CreateParagraph({
+    Title = "Banani Teleporter",
+    Content = "Adds a tool to your hotbar. Equip it and click anywhere to teleport."
+})
+TeleportTab:CreateButton({
+    Name = "🍌 Give Teleport Tool",
+    Callback = GiveTeleportTool
+})
+TeleportTab:CreateButton({
+    Name = "🗑️ Remove Teleport Tool",
+    Callback = RemoveTeleportTool
+})
+
+TeleportTab:CreateSection("👥 Player Teleport")
+
+local Names = GetDisplayNames()
+PlayerDropdown = TeleportTab:CreateDropdown({
+    Name = "Select Player",
+    Options = Names,
+    CurrentOption = Names[1] and {Names[1]} or {},
+    SearchBarEnabled = true,
+    Callback = function(Option) SelectedPlayer = type(Option) == "table" and Option[1] or Option end
+})
+
+TeleportTab:CreateButton({
+    Name = "📍 Teleport To Player",
+    Callback = function()
+        local Target = SelectedPlayer and FindPlayerByDisplayName(SelectedPlayer)
+        local TargetRoot = Target and Target.Character and Target.Character:FindFirstChild("HumanoidRootPart")
+        local R = Root()
+        if R and TargetRoot then
+            R.CFrame = TargetRoot.CFrame + Vector3.new(0, 3, 0)
+            LogSuccess("Teleported to " .. Target.DisplayName)
+        else
+            Notify(
+                "Teleport",
+                "The selected player or character is unavailable."
+            )
+            LogWarning("Player teleport failed")
+        end
+    end
+})
+
+
+TeleportTab:CreateSection("⚡ Quick Positions")
+TeleportTab:CreateButton({Name = "💾 Save Current Position", Callback = function() local R = Root() if R then SavedPosition = R.CFrame Notify("📍 Position Saved", "Temporary position saved.") end end})
+TeleportTab:CreateButton({Name = "📍 Teleport To Saved Position", Callback = function() local R = Root() if R and SavedPosition then R.CFrame = SavedPosition end end})
+
+TeleportTab:CreateSection("🗂️ Named Waypoints")
+local WaypointName = ""
+local SelectedWaypoint = nil
+local SelectedDeleteWaypoint = nil
+
+TeleportTab:CreateInput({
+    Name = "Waypoint Name",
+    PlaceholderText = "Example: Shop",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text) WaypointName = Text end
+})
+
+TeleportTab:CreateButton({
+    Name = "➕ Save Named Waypoint",
+    Callback = function()
+        local R = Root()
+        local CleanName = tostring(WaypointName):match("^%s*(.-)%s*$")
+        if not R or CleanName == "" then Notify("Waypoint", "Enter a waypoint name first.") return end
+        Waypoints[CleanName] = EncodeCFrame(R.CFrame)
+        SaveWaypoints()
+        RefreshWaypoints()
+        Runtime.UpdatePreferenceDisplays()
+        Notify("Waypoint Saved", CleanName .. " saved for PlaceId " .. game.PlaceId)
+        LogSuccess("Waypoint saved: " .. CleanName, "Waypoints")
+    end
+})
+
+WaypointDropdown = TeleportTab:CreateDropdown({
+    Name = "Waypoint Selector",
+    Options = GetWaypointNames(),
+    CurrentOption = {},
+    Callback = function(Option) SelectedWaypoint = type(Option) == "table" and Option[1] or Option end
+})
+
+TeleportTab:CreateButton({
+    Name = "📍 Teleport To Waypoint",
+    Callback = function()
+        local R = Root()
+        local CF = SelectedWaypoint and DecodeCFrame(Waypoints[SelectedWaypoint])
+        if R and CF then R.CFrame = CF end
+    end
+})
+
+DeleteWaypointDropdown = TeleportTab:CreateDropdown({
+    Name = "Delete Selector",
+    Options = GetWaypointNames(),
+    CurrentOption = {},
+    Callback = function(Option) SelectedDeleteWaypoint = type(Option) == "table" and Option[1] or Option end
+})
+
+TeleportTab:CreateButton({
+    Name = "🗑️ Delete Waypoint",
+    Callback = function()
+        if SelectedDeleteWaypoint and Waypoints[SelectedDeleteWaypoint] then
+            local Deleted = SelectedDeleteWaypoint
+            Waypoints[Deleted] = nil
+            SelectedDeleteWaypoint = nil
+            SaveWaypoints()
+            RefreshWaypoints()
+            Runtime.UpdatePreferenceDisplays()
+            Notify("Waypoint Deleted", Deleted)
+            LogInformation("Waypoint deleted: " .. Deleted, "Waypoints")
+        end
+    end
+})
+
+end
+
+--==============================================================
+-- VISUALS TAB
+--==============================================================
+
+do
+local VisualsTab = Window:CreateTab("Visuals", 4483362458)
+
+VisualsTab:CreateParagraph({
+    Title = "👁️ Visuals & Performance",
+    Content =
+        "Lighting, highlights, ESP, and performance controls are grouped here."
+        .. "\nPerformance Mode is separated so it is easier to find."
+})
+
+VisualsTab:CreateSection("👁️ Lighting")
+VisualsTab:CreateToggle({
+    Name = "🌙 Fullbright",
+    Flag = "Visuals_Fullbright",
+    CurrentValue = false,
+    Callback = SetFullbright
+})
+VisualsTab:CreateToggle({
+    Name = "☀️ Day",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then Lighting.ClockTime = 14 end
+    end
+})
+VisualsTab:CreateToggle({
+    Name = "🌙 Night",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then Lighting.ClockTime = 0 end
+    end
+})
+VisualsTab:CreateSlider({
+    Name = "💡 Brightness",
+    Flag = "Visuals_Brightness",
+    Range = {0, 10},
+    Increment = 0.5,
+    CurrentValue = Lighting.Brightness,
+    Callback = function(Value)
+        Lighting.Brightness = Value
+    end
+})
+VisualsTab:CreateToggle({
+    Name = "🌫️ Fog",
+    Flag = "Visuals_Fog",
+    CurrentValue = true,
+    Callback = function(Value)
+        Lighting.FogEnd = Value and 1000 or 100000
+    end
+})
+VisualsTab:CreateSection("⚡ Performance")
+VisualsTab:CreateParagraph({
+    Title = "Performance Mode",
+    Content =
+        "Disables expensive local visual effects and simplifies materials."
+        .. "\nTurning it off restores saved visuals."
+})
+VisualsTab:CreateToggle({
+    Name = "Performance Mode",
+    Flag = "Visuals_LowGraphics",
+    CurrentValue = false,
+    Callback = SetLowGraphics
+})
+
+VisualsTab:CreateSection("✨ Chams")
+VisualsTab:CreateToggle({
+    Name = "Player Chams",
+    Flag = "Visuals_PlayerChams",
+    CurrentValue = false,
+    Callback = function(Value)
+        SetChams(Value)
+
+        if Value and not ChamsSettingsCreated then
+            ChamsSettingsCreated = true
+
+            task.defer(function()
+                VisualsTab:CreateSection("🎨 Player Chams Settings")
+                VisualsTab:CreateParagraph({
+                    Title = "Chams Settings",
+                    Content =
+                        "These controls appeared because Player Chams was enabled."
+                })
+                VisualsTab:CreateToggle({
+                    Name = "Team Color Chams",
+                    Flag = "Visuals_ChamsTeamColors",
+                    CurrentValue = false,
+                    Callback = function(Enabled)
+                        ChamsTeamColorsEnabled = Enabled
+                    end
+                })
+                VisualsTab:CreateColorPicker({
+                    Name = "Fill Color",
+                    Flag = "Visuals_ChamsFillColor",
+                    Color = ChamsFillColor,
+                    Callback = function(Color)
+                        ChamsFillColor = Color
+                    end
+                })
+                VisualsTab:CreateColorPicker({
+                    Name = "Outline Color",
+                    Flag = "Visuals_ChamsOutlineColor",
+                    Color = ChamsOutlineColor,
+                    Callback = function(Color)
+                        ChamsOutlineColor = Color
+                    end
+                })
+                VisualsTab:CreateSlider({
+                    Name = "Fill Transparency",
+                    Flag = "Visuals_ChamsFillTransparency",
+                    Range = {0, 1},
+                    Increment = 0.05,
+                    CurrentValue = 0.5,
+                    Callback = function(Transparency)
+                        ChamsFillTransparency = Transparency
+                    end
+                })
+                VisualsTab:CreateSlider({
+                    Name = "Outline Transparency",
+                    Flag = "Visuals_ChamsOutlineTransparency",
+                    Range = {0, 1},
+                    Increment = 0.05,
+                    CurrentValue = 0,
+                    Callback = function(Transparency)
+                        ChamsOutlineTransparency = Transparency
+                    end
+                })
+
+                Notify(
+                    "Player Chams",
+                    "Chams settings opened below."
+                )
+            end)
+        end
+    end
+})
+VisualsTab:CreateToggle({
+    Name = "NPC Highlights",
+    Flag = "Visuals_NPCChams",
+    CurrentValue = false,
+    Callback = SetNPCChams
+})
+VisualsTab:CreateToggle({
+    Name = "Hitbox Visualization",
+    Flag = "Visuals_Hitboxes",
+    CurrentValue = false,
+    Callback = SetHitboxes
+})
+
+VisualsTab:CreateSection("🎯 Player ESP")
+VisualsTab:CreateToggle({
+    Name = "Box ESP",
+    Flag = "Visuals_BoxESP",
+    CurrentValue = false,
+    Callback = function(Value)
+        BoxESPEnabled = Value
+        SetPlayerESP()
+    end
+})
+VisualsTab:CreateToggle({
+    Name = "Health ESP",
+    Flag = "Visuals_HealthESP",
+    CurrentValue = false,
+    Callback = function(Value)
+        HealthESPEnabled = Value
+        SetPlayerESP()
+    end
+})
+
+end
+
+--==============================================================
+-- SPECTATOR / CAMERA TAB
+--==============================================================
+
+do
+local SpectatorTab = Window:CreateTab("Spectator", 4483362458)
+
+SpectatorTab:CreateParagraph({
+    Title = "🎥 Camera & Spectator",
+    Content =
+        "Freecam, camera settings, saved camera positions, and player spectating are grouped here."
+})
+
+SpectatorTab:CreateSection("📷 Camera")
+
+SpectatorTab:CreateSlider({
+    Name = "Camera FOV",
+    Flag = "Camera_FOV",
+    Range = {40, 120},
+    Increment = 1,
+    CurrentValue = math.floor(Camera.FieldOfView),
+    Callback = function(Value)
+        FreecamOriginalFOV = Value
+
+        if not FreecamCinematicEnabled then
+            Camera.FieldOfView = Value
+        end
+    end
+})
+
+SpectatorTab:CreateToggle({
+    Name = "Camera Shake",
+    Flag = "Camera_Shake",
+    CurrentValue = false,
+    Callback = SetCameraShake
+})
+
+SpectatorTab:CreateSlider({
+    Name = "Camera Shake Strength",
+    Flag = "Camera_ShakeStrength",
+    Range = {0.05, 1},
+    Increment = 0.05,
+    CurrentValue = CameraShakeStrength,
+    Callback = function(Value)
+        CameraShakeStrength = Value
+    end
+})
+
+SpectatorTab:CreateSection("🎥 Freecam")
+
+SpectatorTab:CreateParagraph({
+    Title = "Freecam Controls",
+    Content =
+        "WASD = move"
+        .. "\nQ/E = down/up"
+        .. "\nHold right-click and move the mouse to look"
+        .. "\nMouse wheel = adjust speed"
+})
+
+SpectatorTab:CreateToggle({
+    Name = "🎥 Freecam",
+    Flag = "Freecam_Enabled",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then StartFreecam() else StopFreecam() end
+    end
+})
+
+SpectatorTab:CreateSlider({
+    Name = "Freecam Speed",
+    Flag = "Freecam_Speed",
+    Range = {5, 250},
+    Increment = 5,
+    CurrentValue = 50,
+    Callback = function(Value)
+        FreecamSpeed = Value
+    end
+})
+
+SpectatorTab:CreateSlider({
+    Name = "Scroll Wheel Step",
+    Flag = "Freecam_ScrollStep",
+    Range = {1, 25},
+    Increment = 1,
+    CurrentValue = 5,
+    Callback = function(Value)
+        FreecamScrollStep = Value
+    end
+})
+
+SpectatorTab:CreateToggle({
+    Name = "Smooth Movement",
+    Flag = "Freecam_Smooth",
+    CurrentValue = false,
+    Callback = function(Value)
+        FreecamSmoothEnabled = Value
+        LogInformation(
+            "Smooth Freecam "
+            .. (Value and "enabled" or "disabled"),
+            "Freecam"
+        )
+    end
+})
+
+SpectatorTab:CreateSlider({
+    Name = "Smoothness",
+    Flag = "Freecam_Smoothness",
+    Range = {0.02, 0.5},
+    Increment = 0.01,
+    CurrentValue = 0.18,
+    Callback = function(Value)
+        FreecamSmoothness = Value
+    end
+})
+
+SpectatorTab:CreateToggle({
+    Name = "Cinematic Mode",
+    Flag = "Freecam_Cinematic",
+    CurrentValue = false,
+    Callback = function(Value)
+        FreecamCinematicEnabled = Value
+
+        if FreecamEnabled then
+            Camera.FieldOfView = Value and 50 or FreecamOriginalFOV
+        end
+
+        LogInformation(
+            "Cinematic Mode "
+            .. (Value and "enabled" or "disabled"),
+            "Camera"
+        )
+    end
+})
+
+SpectatorTab:CreateSection("📍 Camera Positions")
+
+SpectatorTab:CreateButton({
+    Name = "💾 Save Camera Position",
+    Callback = SaveFreecamPosition
+})
+
+SpectatorTab:CreateButton({
+    Name = "↩️ Return To Saved Camera",
+    Callback = ReturnToSavedFreecamPosition
+})
+
+SpectatorTab:CreateSection("👀 Player Selection")
+
+SpectatorDropdown = SpectatorTab:CreateDropdown({
+    Name = "Search or Select Player",
+    Options = GetDisplayNames(),
+    CurrentOption = {},
+    SearchBarEnabled = true,
+
+    Callback = function(Option)
+        local Name = type(Option) == "table" and Option[1] or Option
+        local Target = FindPlayerByDisplayName(Name)
+
+        if Target then
+            SpectatorTarget = Target
+
+            if SpectatorInfo and not Spectating then
+                SpectatorInfo:Set({
+                    Title = "Spectator",
+                    Content = "Selected: " .. Target.DisplayName .. " (@" .. Target.Name .. ")"
+                })
+            end
+        end
+    end
+})
+
+SpectatorTab:CreateSection("🎥 Spectate Controls")
+SpectatorTab:CreateToggle({
+    Name = "👀 Spectate",
+    Flag = "Spectator_Enabled",
+    CurrentValue = false,
+
+    Callback = function(Value)
+        if Value then
+            StartSpectating(SpectatorTarget)
+        else
+            StopSpectating()
+        end
+    end
+})
+
+SpectatorTab:CreateButton({
+    Name = "⬅️ Previous Player",
+    Callback = function()
+        SwitchSpectator(-1)
+    end
+})
+
+SpectatorTab:CreateButton({
+    Name = "➡️ Next Player",
+    Callback = function()
+        SwitchSpectator(1)
+    end
+})
+
+SpectatorTab:CreateSection("📊 Live Player Information")
+SpectatorInfo = SpectatorTab:CreateParagraph({
+    Title = "Spectator",
+    Content = "Select a player above."
+})
+
+
+end
+
+do
+    local function GetPlayerStats(Target)
+        local Lines = {}
+        local SeenNames = {}
+
+        local function ReadContainer(Container)
+            if not Container then return end
+
+            for _, Stat in ipairs(Container:GetChildren()) do
+                if Stat:IsA("ValueBase") and not SeenNames[Stat.Name] then
+                    SeenNames[Stat.Name] = true
+                    table.insert(
+                        Lines,
+                        Stat.Name .. ": " .. tostring(Stat.Value)
+                    )
+                end
+            end
+        end
+
+        ReadContainer(Target:FindFirstChild("leaderstats"))
+        ReadContainer(Target:FindFirstChild("Stats"))
+        ReadContainer(Target:FindFirstChild("Data"))
+        ReadContainer(Target:FindFirstChild("PlayerData"))
+
+        if #Lines == 0 then
+            return "No public currency or stats found."
+        end
+
+        table.sort(Lines)
+        return table.concat(Lines, "\n")
+    end
+
+    local function GetToolSummary(Target)
+        local Names = {}
+        local Seen = {}
+
+        local function ReadTools(Container)
+            if not Container then return end
+
+            for _, Object in ipairs(Container:GetChildren()) do
+                if Object:IsA("Tool") and not Seen[Object.Name] then
+                    Seen[Object.Name] = true
+                    table.insert(Names, Object.Name)
+                end
+            end
+        end
+
+        ReadTools(Target.Character)
+        ReadTools(Target:FindFirstChildOfClass("Backpack"))
+
+        table.sort(Names)
+
+        if #Names == 0 then
+            return "None"
+        end
+
+        if #Names > 8 then
+            local HiddenCount = #Names - 8
+
+            while #Names > 8 do
+                table.remove(Names)
+            end
+
+            return table.concat(Names, ", ")
+                .. " +"
+                .. HiddenCount
+                .. " more"
+        end
+
+        return table.concat(Names, ", ")
+    end
+
+    local function FormatAccountAge(Days)
+        Days = math.max(0, math.floor(tonumber(Days) or 0))
+
+        local Years = math.floor(Days / 365)
+        local RemainingAfterYears = Days % 365
+        local Months = math.floor(RemainingAfterYears / 30)
+        local RemainingDays = RemainingAfterYears % 30
+        local Parts = {}
+
+        if Years > 0 then
+            table.insert(
+                Parts,
+                Years .. (Years == 1 and " year" or " years")
+            )
+        end
+
+        if Months > 0 then
+            table.insert(
+                Parts,
+                Months .. (Months == 1 and " month" or " months")
+            )
+        end
+
+        if RemainingDays > 0 or #Parts == 0 then
+            table.insert(
+                Parts,
+                RemainingDays
+                    .. (RemainingDays == 1 and " day" or " days")
+            )
+        end
+
+        return tostring(Days)
+            .. " days ("
+            .. table.concat(Parts, ", ")
+            .. ")"
+    end
+
+    local function GetAvatarThumbnail(Target)
+        if not Target then
+            return nil
+        end
+
+        local Cached = Runtime.AvatarThumbnailCache[Target.UserId]
+
+        if Cached then
+            return Cached
+        end
+
+        local Success, Thumbnail = pcall(function()
+            return Players:GetUserThumbnailAsync(
+                Target.UserId,
+                Enum.ThumbnailType.HeadShot,
+                Enum.ThumbnailSize.Size420x420
+            )
+        end)
+
+        if Success and type(Thumbnail) == "string" then
+            Runtime.AvatarThumbnailCache[Target.UserId] = Thumbnail
+            return Thumbnail
+        end
+
+        return nil
+    end
+
+    local function StatsOptionLabel(Target)
+        return Target.DisplayName .. " (@" .. Target.Name .. ")"
+    end
+
+    local BuildSuccess, BuildError = pcall(function()
+        local StatsTab = Window:CreateTab("Stats", 4483362458)
+
+        StatsTab:CreateParagraph({
+            Title = "📊 Player Stats",
+            Content =
+                "Select a player to view public profile, character, tool, distance, and leaderstat information."
+        })
+
+        StatsTab:CreateSection("👤 Player Selection")
+
+        Runtime.StatsPlayerMap = {}
+
+        Runtime.RefreshStatsPlayers = function()
+            local Options = {}
+            local SelfLabel = StatsOptionLabel(Player)
+
+            Runtime.StatsPlayerMap = {}
+
+            for _, Target in ipairs(Players:GetPlayers()) do
+                local Label = StatsOptionLabel(Target)
+                Runtime.StatsPlayerMap[Label] = Target
+                table.insert(Options, Label)
+            end
+
+            table.sort(Options, function(A, B)
+                return string.lower(A) < string.lower(B)
+            end)
+
+            local SelfIndex = table.find(Options, SelfLabel)
+
+            if SelfIndex and SelfIndex ~= 1 then
+                table.remove(Options, SelfIndex)
+                table.insert(Options, 1, SelfLabel)
+            end
+
+            if StatsPlayerDropdown then
+                StatsPlayerDropdown:Refresh(Options)
+            end
+
+            return Options
+        end
+
+        local StatsOptions = Runtime.RefreshStatsPlayers()
+
+        StatsPlayerDropdown = StatsTab:CreateDropdown({
+            Name = "Search or Select Player",
+            Options = StatsOptions,
+            CurrentOption = {StatsOptionLabel(Player)},
+            SearchBarEnabled = true,
+            Flag = "Stats_SelectedPlayer",
+
+            Callback = function(Option)
+                local Label =
+                    type(Option) == "table"
+                    and Option[1]
+                    or Option
+
+                local Target =
+                    Runtime.StatsPlayerMap
+                    and Runtime.StatsPlayerMap[Label]
+
+                if Target then
+                    SelectedStatsPlayer = Target
+                    Runtime.LastStatsUserId = nil
+
+                    if Runtime.RefreshStats then
+                        Runtime.RefreshStats(true)
+                    end
+                end
+            end
+        })
+
+        StatsTab:CreateSection("📊 Live Profile")
+
+        -- Do not pass placeholder text as an icon. The old invalid
+        -- icon stopped this tab and every tab created after it.
+        StatsAvatarLabel = StatsTab:CreateLabel(
+            "Avatar: " .. Player.DisplayName
+        )
+
+        StatsInformation = StatsTab:CreateParagraph({
+            Title = "Player Stats",
+            Content = "Loading..."
+        })
+
+        Runtime.RefreshStats = function(RefreshAvatar)
+            local Target = SelectedStatsPlayer
+
+            if not Target or not Target.Parent then
+                SelectedStatsPlayer = Player
+                Target = Player
+                Runtime.LastStatsUserId = nil
+            end
+
+            local TargetCharacter = Target.Character
+            local H =
+                TargetCharacter
+                and TargetCharacter:FindFirstChildOfClass("Humanoid")
+            local TargetRoot =
+                TargetCharacter
+                and TargetCharacter:FindFirstChild("HumanoidRootPart")
+            local MyRoot = Root()
+
+            local Health =
+                H
+                and (
+                    math.floor(H.Health)
+                    .. "/"
+                    .. math.floor(H.MaxHealth)
+                )
+                or "N/A"
+
+            local Distance =
+                MyRoot
+                and TargetRoot
+                and (
+                    math.floor(
+                        (MyRoot.Position - TargetRoot.Position).Magnitude
+                    )
+                    .. " studs"
+                )
+                or "N/A"
+
+            local State = H and CharacterState(H) or "N/A"
+            local EquippedTool =
+                TargetCharacter
+                and TargetCharacter:FindFirstChildOfClass("Tool")
+            local TeamName =
+                Target.Team
+                and Target.Team.Name
+                or "None"
+
+            if StatsInformation then
+                pcall(function()
+                    StatsInformation:Set({
+                        Title =
+                            "📊 "
+                            .. Target.DisplayName
+                            .. " (@"
+                            .. Target.Name
+                            .. ")",
+                        Content =
+                            "User ID: " .. tostring(Target.UserId)
+                            .. "\nAccount Age: "
+                            .. FormatAccountAge(Target.AccountAge)
+                            .. "\nTeam: " .. TeamName
+                            .. "\nHealth: " .. Health
+                            .. "\nState: " .. State
+                            .. "\nDistance: " .. Distance
+                            .. "\nEquipped Tool: "
+                            .. (
+                                EquippedTool
+                                and EquippedTool.Name
+                                or "None"
+                            )
+                            .. "\nBackpack / Tools: "
+                            .. GetToolSummary(Target)
+                            .. "\n\n💰 Public Stats"
+                            .. "\n"
+                            .. GetPlayerStats(Target)
+                    })
+                end)
+            end
+
+            if RefreshAvatar
+                or Runtime.LastStatsUserId ~= Target.UserId then
+
+                Runtime.LastStatsUserId = Target.UserId
+                local RequestedUserId = Target.UserId
+
+                if StatsAvatarLabel then
+                    pcall(function()
+                        StatsAvatarLabel:Set(
+                            "Avatar: " .. Target.DisplayName
+                        )
+                    end)
+                end
+
+                task.spawn(function()
+                    local Thumbnail = GetAvatarThumbnail(Target)
+
+                    if Unloaded
+                        or not Thumbnail
+                        or not SelectedStatsPlayer
+                        or SelectedStatsPlayer.UserId ~= RequestedUserId then
+
+                        return
+                    end
+
+                    if StatsAvatarLabel then
+                        pcall(function()
+                            StatsAvatarLabel:Set(
+                                "Avatar: " .. Target.DisplayName,
+                                Thumbnail
+                            )
+                        end)
+                    end
+                end)
+            end
+        end
+
+        StatsTab:CreateButton({
+            Name = "🔄 Refresh Selected Player",
+            Callback = function()
+                Runtime.RefreshStatsPlayers()
+                Runtime.RefreshStats(true)
+                LogSuccess("Stats refreshed")
+            end
+        })
+
+        do
+            local Accumulator = 1
+
+            StatsStatusConnection =
+                RunService.Heartbeat:Connect(function(Delta)
+                    if Unloaded then return end
+
+                    Accumulator += Delta
+
+                    if Accumulator < 1 then
+                        return
+                    end
+
+                    Accumulator = 0
+                    Runtime.RefreshStats(false)
+                end)
+        end
+
+        Runtime.RefreshStats(true)
+    end)
+
+    if not BuildSuccess then
+        warn(
+            "BANANIHUB | Stats tab failed: "
+            .. tostring(BuildError)
+        )
+        LogError(
+            "Stats tab failed: "
+            .. tostring(BuildError),
+            "Stats"
+        )
+    end
+end
+
+do
+local function GetPublicServers()
+    local URL =
+        "https://games.roblox.com/v1/games/"
+        .. game.PlaceId
+        .. "/servers/Public?sortOrder=Asc&limit=100"
+
+    local RequestSuccess, Result = pcall(function()
+        return game:HttpGet(URL, true)
+    end)
+
+    if not RequestSuccess then
+        return nil, tostring(Result)
+    end
+
+    local DecodeSuccess, Data = pcall(function()
+        return HttpService:JSONDecode(Result)
+    end)
+
+    if not DecodeSuccess
+        or type(Data) ~= "table"
+        or type(Data.data) ~= "table" then
+
+        return nil, "The public server response was invalid."
+    end
+
+    return Data.data, nil
+end
+
+Runtime.ServerHop = function(Mode)
+    if Runtime.ServerRequestBusy then
+        Notify(
+            "Server",
+            "A server action is already running."
+        )
+        return
+    end
+
+    Runtime.ServerRequestBusy = true
+    Notify("Server", "Searching for an available server...")
+
+    task.spawn(function()
+        local Success, Failure = xpcall(function()
+            local Servers, FetchError = GetPublicServers()
+
+            if not Servers then
+                error(
+                    FetchError
+                    or "Could not load the public server list."
+                )
+            end
+
+            local Available = {}
+
+            for _, Server in ipairs(Servers) do
+                local ServerId = tostring(Server.id or "")
+                local Playing = tonumber(Server.playing) or 0
+                local Capacity = tonumber(Server.maxPlayers) or 0
+                local IsCurrent =
+                    ServerId == tostring(game.JobId)
+                local WasVisited =
+                    Runtime.VisitedServers[ServerId] == true
+
+                if ServerId ~= ""
+                    and Playing < Capacity
+                    and (
+                        not Runtime.AvoidCurrentServer
+                        or not IsCurrent
+                    )
+                    and (
+                        not Runtime.AvoidVisitedServers
+                        or not WasVisited
+                    ) then
+
+                    table.insert(Available, Server)
+                end
+            end
+
+            if #Available == 0 then
+                error(
+                    "No available servers matched the selected filters."
+                )
+            end
+
+            if Mode == "Smallest" then
+                table.sort(Available, function(A, B)
+                    return (tonumber(A.playing) or 0)
+                        < (tonumber(B.playing) or 0)
+                end)
+
+            elseif Mode == "Largest" then
+                table.sort(Available, function(A, B)
+                    return (tonumber(A.playing) or 0)
+                        > (tonumber(B.playing) or 0)
+                end)
+
+            else
+                local RandomIndex = math.random(1, #Available)
+                Available[1], Available[RandomIndex] =
+                    Available[RandomIndex], Available[1]
+            end
+
+            local SelectedServer = Available[1]
+            local ServerId = tostring(SelectedServer.id)
+            local Playing = tonumber(SelectedServer.playing) or 0
+            local Capacity = tonumber(SelectedServer.maxPlayers) or 0
+
+            Runtime.VisitedServers[ServerId] = true
+
+            if Runtime.ServerSelectionParagraph then
+                Runtime.ServerSelectionParagraph:Set({
+                    Title = "Selected Server",
+                    Content =
+                        "Players: "
+                        .. Playing
+                        .. "/"
+                        .. Capacity
+                        .. "\nPing estimate: Unknown"
+                        .. "\nServer ID: "
+                        .. ServerId
+                        .. "\nStatus: Available"
+                })
+            end
+
+            LogInformation(
+                "Players: "
+                .. Playing
+                .. "/"
+                .. Capacity
+                .. "\nPing estimate: Unknown"
+                .. "\nServer ID: "
+                .. ServerId
+                .. "\nStatus: Available",
+                "Server Hop"
+            )
+
+            task.wait(0.35)
+
+            TeleportService:TeleportToPlaceInstance(
+                game.PlaceId,
+                ServerId,
+                Player
+            )
+        end, debug.traceback)
+
+        Runtime.ServerRequestBusy = false
+
+        if not Success then
+            Notify(
+                "Server Hop",
+                "Failed: " .. tostring(Failure)
+            )
+            LogError(
+                tostring(Failure),
+                "Server Hop"
+            )
+        end
+    end)
+end
+
+--==============================================================
+-- BANANI AI / HELP TAB
+--==============================================================
+
+do
+local HelpTab = Window:CreateTab("Banani AI", 4483362458)
+HelpTab:CreateParagraph({
+    Title = "🍌 Banani AI",
+    Content =
+        "Choose a feature below for a quick explanation and its new tab location."
+})
+HelpTab:CreateSection("🍌 Built-In Helper")
+
+local HelpTopics = {
+    ["Fly"] = "Enable Fly in Player > Movement. Use WASD to move, Space to go up, and Left Control to go down.",
+    ["Noclip"] = "Noclip lets your character pass through collidable parts while enabled.",
+    ["Spider Climb"] = "Enable Spider Climb in Player > Movement. Face a wall and hold W to climb upward.",
+    ["Fast Walk"] = "Fast Walk uses the Walk Speed slider while enabled.",
+    ["High Jump"] = "High Jump uses the Jump Power slider while enabled.",
+    ["Infinite Jump"] = "Infinite Jump lets you jump again while already in the air.",
+    ["Auto Jump"] = "Auto Jump jumps automatically whenever your character is on the ground.",
+    ["Freeze"] = "Freeze sets movement and jumping to zero until disabled.",
+    ["Anti Void"] = "Anti Void saves your last safe grounded position and returns you there if you fall below the map.",
+    ["Anti Ragdoll"] = "Anti Ragdoll attempts to recover your character from ragdoll, physics, and falling-down states.",
+    ["Anti-Fling"] = "Anti-Fling clears extreme character velocity to reduce accidental flinging.",
+    ["Anti-AFK"] = "Anti-AFK sends a small local input when Roblox detects that you are idle.",
+    ["Teleport Tool"] = "Open Teleport, give yourself the Banani Teleporter, equip it from your hotbar, then click a location.",
+    ["Named Waypoints"] = "Save named locations per PlaceId, then select, teleport to, or delete them later.",
+    ["Fullbright"] = "Fullbright increases brightness, removes most fog, and disables shadows locally.",
+    ["Performance Mode"] = "Open Visuals > Performance. It disables particles, smoke, fire, sparkles, trails, beams, post-processing, shadows, and complex materials. Turning it off restores saved visuals.",
+    ["Player Chams"] = "Player Chams highlights other player characters. Enable it once to reveal the extra chams settings.",
+    ["NPC Highlights"] = "NPC Highlights highlights humanoid models that are not player characters.",
+    ["Hitbox Visualization"] = "Hitbox Visualization outlines player root parts for debugging and visibility.",
+    ["Box ESP"] = "Box ESP draws a small box around visible player characters on your screen.",
+    ["Health ESP"] = "Health ESP shows a small health bar and health number near visible player characters.",
+    ["Freecam"] = "Open Spectator > Freecam. Use WASD to move, Q and E for down and up, and hold right-click while moving the mouse to look around.",
+    ["Spectator"] = "Open Spectator. Camera, Freecam, saved camera positions, player selection, and live spectating are grouped there.",
+    ["Stats"] = "Stats shows the selected player's avatar, display name, username, health, team, distance, equipped tool, backpack items, age, and leaderstats.",
+    ["Server Actions"] = "Server tools show the current place information and provide rejoin, copy, and server-hop actions.",
+    ["Themes"] = "Choose Banana, Midnight, Purple, Ocean, Matrix, or Crimson in Settings.",
+    ["Configs"] = "Configs are saved presets in Settings. Save a new config, select one to load, or overwrite the selected config.",
+    ["Favorites"] = "Choose favorite features in Settings. Favorites are saved in UserPreferences.json and shown on Home.",
+}
+
+local SelectedHelpTopic = "Spider Climb"
+
+HelpTab:CreateDropdown({
+    Name = "Ask About a Feature",
+    Options = {
+        "Fly",
+        "Noclip",
+        "Spider Climb",
+        "Fast Walk",
+        "High Jump",
+        "Infinite Jump",
+        "Auto Jump",
+        "Freeze",
+        "Anti Void",
+        "Anti Ragdoll",
+        "Anti-Fling",
+        "Anti-AFK",
+        "Teleport Tool",
+        "Named Waypoints",
+        "Fullbright",
+        "Performance Mode",
+        "Player Chams",
+        "NPC Highlights",
+        "Hitbox Visualization",
+        "Box ESP",
+        "Health ESP",
+        "Freecam",
+        "Spectator",
+        "Stats",
+        "Server Actions",
+        "Themes",
+        "Configs",
+        "Favorites"
+    },
+    CurrentOption = {"Spider Climb"},
+    SearchBarEnabled = true,
+
+    Callback = function(Option)
+        SelectedHelpTopic =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+
+        if HelpInformation then
+            HelpInformation:Set({
+                Title = "🍌 " .. SelectedHelpTopic,
+                Content = HelpTopics[SelectedHelpTopic] or "No explanation is available."
+            })
+        end
+    end
+})
+
+HelpInformation = HelpTab:CreateParagraph({
+    Title = "🍌 Spider Climb",
+    Content = HelpTopics["Spider Climb"]
+})
+end
+
+
+end
+
+
+local function MasterReset()
+    pcall(StopFly)
+    pcall(StopFreecam)
+    pcall(StopSpectating)
+    pcall(function() SetCameraShake(false) end)
+    pcall(function() SetChams(false) end)
+    pcall(function() SetNPCChams(false) end)
+    pcall(function() SetHitboxes(false) end)
+    pcall(function() SetLowGraphics(false) end)
+    pcall(function() SetFullbright(false) end)
+    pcall(function() SetAntiVoid(false) end)
+    pcall(function() SetAntiRagdoll(false) end)
+    pcall(function() SetSpiderClimb(false) end)
+    pcall(function() SetNoclip(false) end)
+
+    BoxESPEnabled = false
+    HealthESPEnabled = false
+    AutoJumpEnabled = false
+    InfiniteJumpEnabled = false
+    AntiFlingEnabled = false
+    AntiAFKEnabled = false
+    pcall(function() SetFreeze(false) end)
+    FastWalkEnabled = false
+    HighJumpEnabled = false
+
+    pcall(SetPlayerESP)
+    pcall(RemoveTeleportTool)
+    pcall(UpdateMovement)
+    pcall(function() SetCharacterLocked(false) end)
+
+    Camera.CameraType = Enum.CameraType.Custom
+    Camera.FieldOfView = FreecamOriginalFOV
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+
+    local H = Humanoid()
+    if H then
+        Camera.CameraSubject = H
+    end
+
+    if Rayfield.Flags then
+        for FlagName, Flag in pairs(Rayfield.Flags) do
+            if Flag and Flag.Set then
+                if string.find(FlagName, "Enabled")
+                    or string.find(FlagName, "Fly")
+                    or string.find(FlagName, "Noclip")
+                    or string.find(FlagName, "ESP")
+                    or string.find(FlagName, "Chams")
+                    or string.find(FlagName, "Performance") then
+
+                    pcall(function()
+                        Flag:Set(false)
+                    end)
+                end
+            end
+        end
+    end
+
+    Notify("Master Reset", "All active features were reset.")
+    LogSuccess("All active features were reset", "Master Reset")
+end
+
+local function UnloadBananiHub()
+    if Unloaded then return end
+    Unloaded = true
+
+    pcall(StopFly)
+    pcall(StopFreecam)
+    pcall(StopSpectating)
+    pcall(function() SetCameraShake(false) end)
+    pcall(function() SetChams(false) end)
+    pcall(function() SetNPCChams(false) end)
+    pcall(function() SetHitboxes(false) end)
+    pcall(function() SetLowGraphics(false) end)
+    pcall(function() SetFullbright(false) end)
+    pcall(function() SetAntiVoid(false) end)
+    pcall(function() SetAntiRagdoll(false) end)
+    pcall(function() SetSpiderClimb(false) end)
+
+    BoxESPEnabled = false
+    HealthESPEnabled = false
+    pcall(SetPlayerESP)
+    pcall(RemoveTeleportTool)
+
+    pcall(function() SetNoclip(false) end)
+    AutoJumpEnabled = false
+    InfiniteJumpEnabled = false
+    AntiFlingEnabled = false
+    AntiAFKEnabled = false
+    pcall(function() SetFreeze(false) end)
+    FastWalkEnabled = false
+    HighJumpEnabled = false
+
+    pcall(UpdateMovement)
+    pcall(function() SetCharacterLocked(false) end)
+
+    local Connections = {
+        FlyConnection,
+        AutoJumpConnection,
+        NoclipConnection,
+        StatusConnection,
+        ChamsConnection,
+        NPCChamsConnection,
+        HitboxConnection,
+        FreecamConnection,
+        FreecamMouseConnection,
+        FreecamEndConnection,
+        FreecamChangedConnection,
+        CameraShakeConnection,
+        SpectatorConnection,
+        ServerStatusConnection,
+        StatsStatusConnection,
+        AntiVoidConnection,
+        AntiRagdollConnection,
+        SpiderClimbConnection,
+        ESPConnection
+    }
+
+    for _, Connection in ipairs(Connections) do
+        if Connection then
+            pcall(function()
+                Connection:Disconnect()
+            end)
+        end
+    end
+
+    for _, Connection in ipairs(Runtime.PerformanceConnections) do
+        if Connection then
+            pcall(function()
+                Connection:Disconnect()
+            end)
+        end
+    end
+
+    Runtime.PerformanceConnections = {}
+
+    for _, Connection in ipairs(Runtime.Connections) do
+        if Connection then
+            pcall(function()
+                Connection:Disconnect()
+            end)
+        end
+    end
+
+    Runtime.Connections = {}
+
+    pcall(function()
+        for _, Target in ipairs(Players:GetPlayers()) do
+            RemoveESPFromCharacter(Target.Character)
+        end
+    end)
+
+    pcall(function()
+        ClearHighlights("BananiPlayerChams")
+        ClearHighlights("BananiNPCChams")
+    end)
+
+    pcall(function()
+        for _, Object in ipairs(workspace:GetDescendants()) do
+            if Object.Name == "BananiHitbox"
+                or Object.Name == "BananiESP"
+                or Object.Name == "BananiFlyVelocity"
+                or Object.Name == "BananiFlyGyro" then
+
+                Object:Destroy()
+            end
+        end
+    end)
+
+    Camera.CameraType = Enum.CameraType.Custom
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+
+    do
+        local Environment = getgenv and getgenv() or _G
+
+        if Environment.__BANANIHUB_UNLOAD == UnloadBananiHub then
+            Environment.__BANANIHUB_UNLOAD = nil
+        end
+    end
+
+    local H = Humanoid()
+    if H then
+        Camera.CameraSubject = H
+    end
+
+    if Rayfield.Destroy then
+        pcall(function()
+            Rayfield:Destroy()
+        end)
+    elseif Rayfield.Unload then
+        pcall(function()
+            Rayfield:Unload()
+        end)
+    else
+        pcall(function()
+            local Container = gethui and gethui() or game:GetService("CoreGui")
+            local Interface = Container:FindFirstChild("BananiUI")
+                or Container:FindFirstChild("Rayfield")
+                or Container:FindFirstChild("BANANIHUB")
+            if Interface then Interface:Destroy() end
+        end)
+    end
+end
+
+do
+    local Environment = getgenv and getgenv() or _G
+    Environment.__BANANIHUB_UNLOAD = UnloadBananiHub
+end
+
+local function ApplyCompactMode(Value)
+    Runtime.CompactMode = Value == true
+
+    pcall(function()
+        if Window.SetCompactMode then
+            Window:SetCompactMode(Runtime.CompactMode)
+            return
+        end
+
+        local Container =
+            gethui and gethui()
+            or game:GetService("CoreGui")
+
+        local Interface =
+            Container:FindFirstChild("BananiUI")
+            or Container:FindFirstChild("Rayfield")
+            or Container:FindFirstChild("BANANIHUB")
+
+        if Interface then
+            local Scale = Interface:FindFirstChildOfClass("UIScale")
+
+            if not Scale then
+                Scale = Instance.new("UIScale")
+                Scale.Parent = Interface
+            end
+
+            Scale.Scale = Runtime.CompactMode and 0.90 or 1
+        end
+    end)
+
+    Runtime.SavePreferences()
+    Notify(
+        "Compact Mode",
+        Runtime.CompactMode and "Enabled" or "Disabled"
+    )
+    LogInformation(
+        "Compact Mode "
+        .. (Runtime.CompactMode and "enabled" or "disabled"),
+        "Settings"
+    )
+end
+
+local function BuildUtilityTabs()
+local NamedConfigFolder = "BANANIHUB/NamedConfigs"
+local SelectedConfigName = ""
+local SelectedConfigToLoad = nil
+local ConfigDropdown
+
+local function EnsureNamedConfigFolder()
+    if makefolder and isfolder then
+        if not isfolder("BANANIHUB") then
+            makefolder("BANANIHUB")
+        end
+        if not isfolder(NamedConfigFolder) then
+            makefolder(NamedConfigFolder)
+        end
+    end
+end
+
+local function CleanConfigName(Name)
+    local Clean = tostring(Name or ""):match("^%s*(.-)%s*$")
+    Clean = Clean:gsub("[^%w%-%_ ]", "")
+    return Clean
+end
+
+local function GetNamedConfigs()
+    EnsureNamedConfigFolder()
+    local Names = {}
+
+    if listfiles then
+        local Success, Files = pcall(listfiles, NamedConfigFolder)
+        if Success and type(Files) == "table" then
+            for _, FilePath in ipairs(Files) do
+                local Name = tostring(FilePath):match("([^/\\]+)%.json$")
+                if Name then table.insert(Names, Name) end
+            end
+        end
+    end
+
+    table.sort(Names)
+    return Names
+end
+
+local function RefreshConfigDropdown()
+    if ConfigDropdown then
+        ConfigDropdown:Refresh(GetNamedConfigs())
+    end
+end
+
+local function PackConfigValue(Value)
+    local ValueType = typeof(Value)
+
+    if ValueType == "Color3" then
+        return {
+            __type = "Color3",
+            R = math.floor(Value.R * 255 + 0.5),
+            G = math.floor(Value.G * 255 + 0.5),
+            B = math.floor(Value.B * 255 + 0.5)
+        }
+
+    elseif ValueType == "EnumItem" then
+        return {
+            __type = "EnumItem",
+            EnumType = tostring(Value.EnumType),
+            Name = Value.Name
+        }
+    end
+
+    return Value
+end
+
+local function UnpackConfigValue(Value)
+    if type(Value) ~= "table" then
+        return Value
+    end
+
+    if Value.__type == "Color3" then
+        return Color3.fromRGB(
+            Value.R or 255,
+            Value.G or 255,
+            Value.B or 255
+        )
+
+    elseif Value.__type == "EnumItem" then
+        local EnumTypeName =
+            tostring(Value.EnumType or ""):match("^Enum%.(.+)$")
+        local EnumType = EnumTypeName and Enum[EnumTypeName]
+
+        if EnumType and Value.Name and EnumType[Value.Name] then
+            return EnumType[Value.Name]
+        end
+    end
+
+    return Value
+end
+
+local function CaptureCurrentConfig()
+    local Data = {}
+
+    for FlagName, Flag in pairs(Rayfield.Flags or {}) do
+        local Value = Flag.CurrentValue
+            or Flag.CurrentKeybind
+            or Flag.CurrentOption
+            or Flag.Color
+
+        if typeof(Flag.CurrentValue) == "boolean" then
+            Value = Flag.CurrentValue
+        end
+
+        if Value ~= nil then
+            Data[FlagName] = PackConfigValue(Value)
+        end
+    end
+
+    return HttpService:JSONEncode(Data)
+end
+
+local function SaveNamedConfig(Overwrite)
+    EnsureNamedConfigFolder()
+
+    local Name = CleanConfigName(
+        Overwrite and SelectedConfigToLoad or SelectedConfigName
+    )
+
+    if Name == "" then
+        Notify("Configs", "Enter or select a config name first.")
+        LogWarning(
+            "Config name or selection is missing",
+            "Configs"
+        )
+        return
+    end
+
+    if not writefile then
+        Notify(
+            "Configs",
+            "Your executor does not support file saving."
+        )
+        LogError(
+            "File saving is unsupported",
+            "Configs"
+        )
+        return
+    end
+
+    local Path = NamedConfigFolder .. "/" .. Name .. ".json"
+    local Exists = isfile and isfile(Path)
+
+    if Overwrite and not Exists then
+        Notify(
+            "Configs",
+            "Select an existing config before overwriting."
+        )
+        LogWarning(
+            "Overwrite failed because the selected config does not exist",
+            "Configs"
+        )
+        return
+    end
+
+    if not Overwrite and Exists then
+        Notify(
+            "Configs",
+            Name
+            .. " already exists. Select it and use Overwrite."
+        )
+        LogWarning(
+            "Save New blocked to protect existing config: " .. Name,
+            "Configs"
+        )
+        return
+    end
+
+    local Success, ErrorMessage = pcall(function()
+        writefile(Path, CaptureCurrentConfig())
+    end)
+
+    if not Success then
+        Notify(
+            "Configs",
+            "Could not save the config: "
+            .. tostring(ErrorMessage)
+        )
+        LogError(
+            "Config save failed: " .. tostring(ErrorMessage),
+            "Configs"
+        )
+        return
+    end
+
+    SelectedConfigToLoad = Name
+    RefreshConfigDropdown()
+    Runtime.UpdatePreferenceDisplays()
+
+    Notify(
+        "Configs",
+        Overwrite and ("Overwrote " .. Name) or ("Saved " .. Name)
+    )
+    LogSuccess(
+        Overwrite
+            and ("Config overwritten: " .. Name)
+            or ("Config saved: " .. Name),
+        "Configs"
+    )
+end
+
+local function LoadNamedConfig()
+    local Name = CleanConfigName(SelectedConfigToLoad)
+
+    if Name == "" then
+        Notify("Configs", "Select a config first.")
+        LogWarning("No config selected", "Configs")
+        return
+    end
+
+    local Path = NamedConfigFolder .. "/" .. Name .. ".json"
+
+    if not readfile or not isfile or not isfile(Path) then
+        Notify("Configs", "That config could not be found.")
+        LogError("Selected config could not be found", "Configs")
+        return
+    end
+
+    local Success, Data = pcall(function()
+        return HttpService:JSONDecode(readfile(Path))
+    end)
+
+    if not Success or type(Data) ~= "table" then
+        Notify("Configs", "That config is damaged or invalid.")
+        LogError("Selected config is damaged or invalid", "Configs")
+        return
+    end
+
+    local AppliedCount = 0
+
+    for FlagName, PackedValue in pairs(Data) do
+        local Flag = Rayfield.Flags and Rayfield.Flags[FlagName]
+
+        if Flag and Flag.Set then
+            pcall(function()
+                Flag:Set(UnpackConfigValue(PackedValue))
+            end)
+
+            AppliedCount += 1
+
+            if AppliedCount % 20 == 0 then
+                task.wait()
+            end
+        end
+    end
+
+    Notify("Configs", "Loaded " .. Name)
+    LogSuccess("Config loaded: " .. Name, "Configs")
+end
+
+
+local ThemeFolder = "BANANIHUB/Themes"
+
+local function EnsureThemeFolder()
+    if not makefolder or not isfolder then return end
+
+    if not isfolder("BANANIHUB") then
+        makefolder("BANANIHUB")
+    end
+
+    if not isfolder(ThemeFolder) then
+        makefolder(ThemeFolder)
+    end
+end
+
+local function PackThemeColor(Color)
+    return {
+        R = math.floor(Color.R * 255 + 0.5),
+        G = math.floor(Color.G * 255 + 0.5),
+        B = math.floor(Color.B * 255 + 0.5)
+    }
+end
+
+local function UnpackThemeColor(Data)
+    if type(Data) ~= "table" then
+        return Color3.new(1, 1, 1)
+    end
+
+    return Color3.fromRGB(
+        tonumber(Data.R) or 255,
+        tonumber(Data.G) or 255,
+        tonumber(Data.B) or 255
+    )
+end
+
+local function SerializeTheme(Theme)
+    local Packed = {}
+
+    for Key, Value in pairs(Theme) do
+        if typeof(Value) == "Color3" then
+            Packed[Key] = PackThemeColor(Value)
+        end
+    end
+
+    return HttpService:JSONEncode(Packed)
+end
+
+local function DeserializeTheme(Data)
+    local Success, Decoded = pcall(function()
+        return HttpService:JSONDecode(Data)
+    end)
+
+    if not Success or type(Decoded) ~= "table" then
+        return nil
+    end
+
+    local Theme = {}
+
+    for Key, Value in pairs(Decoded) do
+        Theme[Key] = UnpackThemeColor(Value)
+    end
+
+    return Theme
+end
+
+local function CleanThemeName(Name)
+    local Clean = tostring(Name or ""):match("^%s*(.-)%s*$")
+    Clean = Clean:gsub("[^%w%-%_ ]", "")
+    return Clean
+end
+
+local function GetThemeFiles()
+    EnsureThemeFolder()
+    local Names = {}
+
+    if listfiles then
+        local Success, Files = pcall(listfiles, ThemeFolder)
+
+        if Success and type(Files) == "table" then
+            for _, FilePath in ipairs(Files) do
+                local Name = tostring(FilePath):match("([^/\\]+)%.theme$")
+
+                if Name then
+                    table.insert(Names, Name)
+                end
+            end
+        end
+    end
+
+    table.sort(Names)
+    return Names
+end
+
+local function RefreshThemeFiles()
+    if ThemeFileDropdown then
+        ThemeFileDropdown:Refresh(GetThemeFiles())
+    end
+end
+
+local function ApplyCustomTheme()
+    if Window.ModifyTheme then
+        Window.ModifyTheme(CustomTheme)
+    end
+end
+
+local function ExportTheme()
+    EnsureThemeFolder()
+
+    local Name = CleanThemeName(CustomThemeName)
+
+    if Name == "" then
+        Notify("Theme Export", "Enter a theme name first.")
+        return
+    end
+
+    if not writefile then
+        Notify("Theme Export", "Your executor does not support file saving.")
+        return
+    end
+
+    local Success, ErrorMessage = pcall(function()
+        writefile(
+            ThemeFolder .. "/" .. Name .. ".theme",
+            SerializeTheme(CustomTheme)
+        )
+    end)
+
+    if not Success then
+        Notify(
+            "Theme Export",
+            "Could not save the theme: "
+            .. tostring(ErrorMessage)
+        )
+        LogWarning("Theme export failed: " .. tostring(ErrorMessage))
+        return
+    end
+
+    SelectedThemeFile = Name
+    RefreshThemeFiles()
+    Notify("Theme Export", Name .. ".theme saved.")
+end
+
+local function ImportTheme()
+    local Name = CleanThemeName(SelectedThemeFile)
+
+    if Name == "" then
+        Notify("Theme Import", "Select a theme first.")
+        return
+    end
+
+    local Path = ThemeFolder .. "/" .. Name .. ".theme"
+
+    if not readfile or not isfile or not isfile(Path) then
+        Notify("Theme Import", "That theme file could not be found.")
+        return
+    end
+
+    local ReadSuccess, ThemeData = pcall(readfile, Path)
+
+    if not ReadSuccess then
+        Notify("Theme Import", "The selected theme could not be read.")
+        return
+    end
+
+    local Theme = DeserializeTheme(ThemeData)
+
+    if not Theme then
+        Notify("Theme Import", "The selected theme file is invalid.")
+        return
+    end
+
+    for Key, Value in pairs(Theme) do
+        CustomTheme[Key] = Value
+    end
+
+    ApplyCustomTheme()
+    Runtime.CurrentThemeName = "Custom"
+    Runtime.SavePreferences()
+    Runtime.UpdatePreferenceDisplays()
+    Notify("Theme Import", Name .. ".theme loaded.")
+    LogSuccess("Theme imported: " .. Name, "Theme")
+end
+
+
+--==============================================================
+-- SETTINGS / L KEY
+--==============================================================
+
+do
+    local BuildSuccess, BuildError = pcall(function()
+        local SettingsTab =
+            Window:CreateTab("Settings", 4483362458)
+
+        Runtime.SettingsInfoParagraph =
+            SettingsTab:CreateParagraph({
+                Title = "👤 User Preferences",
+                Content =
+                    "Theme: Loading..."
+                    .. "\nKeybind: " .. UIToggleKey.Name
+                    .. "\nFeature Values: saved through named configs"
+                    .. "\nSaved Presets / Configs: Loading..."
+                    .. "\nWaypoints: Loading..."
+                    .. "\nFavorites: Loading..."
+            })
+
+        SettingsTab:CreateButton({
+            Name = "🔄 Refresh Preference Summary",
+            Callback = function()
+                Runtime.UpdatePreferenceDisplays()
+                LogInformation(
+                    "Preference summary refreshed",
+                    "Settings"
+                )
+            end
+        })
+
+        local function CloneTheme(Source)
+            local Copy = {}
+
+            for Key, Value in pairs(Source) do
+                Copy[Key] = Value
+            end
+
+            return Copy
+        end
+
+        local BananaPreset = CloneTheme(CustomTheme)
+        local MatrixPreset = CloneTheme(DEFAULT_GRAY_THEME)
+        local CrimsonPreset = CloneTheme(DEFAULT_GRAY_THEME)
+
+        MatrixPreset.TextColor = Color3.fromRGB(205, 255, 210)
+        MatrixPreset.Background = Color3.fromRGB(7, 20, 10)
+        MatrixPreset.Topbar = Color3.fromRGB(10, 30, 15)
+        MatrixPreset.Shadow = Color3.fromRGB(1, 7, 2)
+        MatrixPreset.NotificationBackground = Color3.fromRGB(8, 25, 12)
+        MatrixPreset.NotificationActionsBackground =
+            Color3.fromRGB(45, 255, 95)
+        MatrixPreset.TabBackground = Color3.fromRGB(12, 38, 19)
+        MatrixPreset.TabStroke = Color3.fromRGB(27, 92, 43)
+        MatrixPreset.TabBackgroundSelected =
+            Color3.fromRGB(44, 230, 88)
+        MatrixPreset.TabTextColor = Color3.fromRGB(180, 255, 195)
+        MatrixPreset.SelectedTabTextColor =
+            Color3.fromRGB(3, 25, 8)
+        MatrixPreset.ElementBackground =
+            Color3.fromRGB(10, 31, 15)
+        MatrixPreset.ElementBackgroundHover =
+            Color3.fromRGB(14, 44, 21)
+        MatrixPreset.SecondaryElementBackground =
+            Color3.fromRGB(8, 25, 12)
+        MatrixPreset.ElementStroke = Color3.fromRGB(23, 78, 36)
+        MatrixPreset.SecondaryElementStroke =
+            Color3.fromRGB(18, 61, 29)
+        MatrixPreset.SliderBackground =
+            Color3.fromRGB(23, 95, 42)
+        MatrixPreset.SliderProgress =
+            Color3.fromRGB(38, 235, 83)
+        MatrixPreset.SliderStroke =
+            Color3.fromRGB(97, 255, 130)
+        MatrixPreset.ToggleBackground =
+            Color3.fromRGB(12, 35, 18)
+        MatrixPreset.ToggleEnabled =
+            Color3.fromRGB(32, 230, 76)
+        MatrixPreset.ToggleDisabled =
+            Color3.fromRGB(65, 95, 71)
+        MatrixPreset.ToggleEnabledStroke =
+            Color3.fromRGB(82, 255, 117)
+        MatrixPreset.ToggleEnabledOuterStroke =
+            Color3.fromRGB(18, 135, 48)
+        MatrixPreset.DropdownSelected =
+            Color3.fromRGB(15, 48, 23)
+        MatrixPreset.DropdownUnselected =
+            Color3.fromRGB(10, 31, 15)
+        MatrixPreset.InputBackground =
+            Color3.fromRGB(9, 27, 13)
+        MatrixPreset.InputStroke =
+            Color3.fromRGB(24, 85, 38)
+        MatrixPreset.PlaceholderColor =
+            Color3.fromRGB(115, 170, 125)
+
+        CrimsonPreset.TextColor = Color3.fromRGB(255, 232, 232)
+        CrimsonPreset.Background = Color3.fromRGB(30, 9, 12)
+        CrimsonPreset.Topbar = Color3.fromRGB(44, 12, 16)
+        CrimsonPreset.Shadow = Color3.fromRGB(10, 2, 3)
+        CrimsonPreset.NotificationBackground =
+            Color3.fromRGB(38, 10, 14)
+        CrimsonPreset.NotificationActionsBackground =
+            Color3.fromRGB(255, 75, 90)
+        CrimsonPreset.TabBackground =
+            Color3.fromRGB(55, 15, 21)
+        CrimsonPreset.TabStroke =
+            Color3.fromRGB(110, 30, 41)
+        CrimsonPreset.TabBackgroundSelected =
+            Color3.fromRGB(235, 55, 72)
+        CrimsonPreset.TabTextColor =
+            Color3.fromRGB(255, 205, 210)
+        CrimsonPreset.SelectedTabTextColor =
+            Color3.fromRGB(45, 3, 8)
+        CrimsonPreset.ElementBackground =
+            Color3.fromRGB(46, 12, 17)
+        CrimsonPreset.ElementBackgroundHover =
+            Color3.fromRGB(62, 17, 23)
+        CrimsonPreset.SecondaryElementBackground =
+            Color3.fromRGB(37, 10, 14)
+        CrimsonPreset.ElementStroke =
+            Color3.fromRGB(92, 25, 35)
+        CrimsonPreset.SecondaryElementStroke =
+            Color3.fromRGB(73, 20, 28)
+        CrimsonPreset.SliderBackground =
+            Color3.fromRGB(115, 28, 42)
+        CrimsonPreset.SliderProgress =
+            Color3.fromRGB(242, 58, 78)
+        CrimsonPreset.SliderStroke =
+            Color3.fromRGB(255, 110, 125)
+        CrimsonPreset.ToggleBackground =
+            Color3.fromRGB(50, 13, 19)
+        CrimsonPreset.ToggleEnabled =
+            Color3.fromRGB(235, 50, 72)
+        CrimsonPreset.ToggleDisabled =
+            Color3.fromRGB(105, 72, 78)
+        CrimsonPreset.ToggleEnabledStroke =
+            Color3.fromRGB(255, 95, 112)
+        CrimsonPreset.ToggleEnabledOuterStroke =
+            Color3.fromRGB(170, 35, 52)
+        CrimsonPreset.DropdownSelected =
+            Color3.fromRGB(70, 19, 27)
+        CrimsonPreset.DropdownUnselected =
+            Color3.fromRGB(46, 12, 17)
+        CrimsonPreset.InputBackground =
+            Color3.fromRGB(41, 11, 15)
+        CrimsonPreset.InputStroke =
+            Color3.fromRGB(102, 27, 38)
+        CrimsonPreset.PlaceholderColor =
+            Color3.fromRGB(190, 125, 135)
+
+        local ThemePresets = {
+            ["Default"] = DEFAULT_GRAY_THEME,
+            ["🍌 Banana"] = BananaPreset,
+            ["🌙 Midnight"] = "DarkBlue",
+            ["🟣 Purple"] = "Amethyst",
+            ["🌊 Ocean"] = "Ocean",
+            ["🟢 Matrix"] = MatrixPreset,
+            ["🔴 Crimson"] = CrimsonPreset
+        }
+
+        local ThemeDescriptions = {
+            ["Default"] =
+                "Dark charcoal panels with banana-yellow tabs, buttons, toggles, sliders, and accents.",
+            ["🍌 Banana"] =
+                "Dark brown panels with banana-yellow accents.",
+            ["🌙 Midnight"] =
+                "Deep navy panels with cool blue accents.",
+            ["🟣 Purple"] =
+                "Dark amethyst colors with purple accents.",
+            ["🌊 Ocean"] =
+                "Dark teal and ocean-blue colors.",
+            ["🟢 Matrix"] =
+                "Black and neon-green terminal colors.",
+            ["🔴 Crimson"] =
+                "Dark red panels with bright crimson accents."
+        }
+
+        SettingsTab:CreateSection("🎨 Theme Presets")
+
+        local ThemeDescription =
+            SettingsTab:CreateParagraph({
+                Title = "Default",
+                Content = ThemeDescriptions["Default"]
+            })
+
+        local function ApplyPresetTheme(Name)
+            local Theme = ThemePresets[Name]
+
+            if not Theme then
+                Notify("Themes", "That theme is unavailable.")
+                return
+            end
+
+            local Success, ErrorMessage = pcall(function()
+                Window.ModifyTheme(Theme)
+            end)
+
+            if not Success then
+                Notify(
+                    "Themes",
+                    "Theme failed: " .. tostring(ErrorMessage)
+                )
+                LogError(
+                    "Theme failed: " .. tostring(ErrorMessage),
+                    "Theme"
+                )
+                return
+            end
+
+            Runtime.CurrentThemeName = Name
+            Runtime.SavePreferences()
+            Runtime.UpdatePreferenceDisplays()
+
+            if ThemeDescription then
+                ThemeDescription:Set({
+                    Title = Name,
+                    Content =
+                        ThemeDescriptions[Name]
+                        or "Custom theme."
+                })
+            end
+
+            LogSuccess("Theme changed to " .. Name)
+        end
+
+        SettingsTab:CreateDropdown({
+            Name = "UI Theme",
+            Flag = "Settings_Theme",
+            Options = {
+                "Default",
+                "🍌 Banana",
+                "🌙 Midnight",
+                "🟣 Purple",
+                "🌊 Ocean",
+                "🟢 Matrix",
+                "🔴 Crimson"
+            },
+            CurrentOption = {"Default"},
+
+            Callback = function(Option)
+                local Name =
+                    type(Option) == "table"
+                    and Option[1]
+                    or Option
+
+                ApplyPresetTheme(Name)
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "↩️ Reset To Default Theme",
+            Callback = function()
+                ApplyPresetTheme("Default")
+            end
+        })
+
+        SettingsTab:CreateSection("🖌️ Custom Theme Editor")
+
+        SettingsTab:CreateParagraph({
+            Title = "How It Works",
+            Content =
+                "Choose colors below, then press Apply Custom Theme. "
+                .. "Colors no longer apply on every drag, which "
+                .. "reduces lag and notification spam."
+        })
+
+        SettingsTab:CreateInput({
+            Name = "Theme Name",
+            PlaceholderText = "Example: Banana",
+            RemoveTextAfterFocusLost = false,
+            Callback = function(Value)
+                CustomThemeName = Value
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Background",
+            Color = CustomTheme.Background,
+            Callback = function(Color)
+                CustomTheme.Background = Color
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Topbar",
+            Color = CustomTheme.Topbar,
+            Callback = function(Color)
+                CustomTheme.Topbar = Color
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Accent",
+            Color = CustomTheme.ToggleEnabled,
+            Callback = function(Color)
+                CustomTheme.ToggleEnabled = Color
+                CustomTheme.ToggleEnabledStroke = Color
+                CustomTheme.ToggleEnabledOuterStroke = Color
+                CustomTheme.SliderProgress = Color
+                CustomTheme.SliderStroke = Color
+                CustomTheme.TabBackgroundSelected = Color
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Buttons",
+            Color = CustomTheme.ElementBackground,
+            Callback = function(Color)
+                CustomTheme.ElementBackground = Color
+                CustomTheme.ElementBackgroundHover =
+                    Color:Lerp(Color3.new(1, 1, 1), 0.08)
+                CustomTheme.SecondaryElementBackground =
+                    Color:Lerp(Color3.new(0, 0, 0), 0.12)
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Text",
+            Color = CustomTheme.TextColor,
+            Callback = function(Color)
+                CustomTheme.TextColor = Color
+                CustomTheme.TabTextColor = Color
+            end
+        })
+
+        SettingsTab:CreateColorPicker({
+            Name = "Strokes",
+            Color = CustomTheme.ElementStroke,
+            Callback = function(Color)
+                CustomTheme.ElementStroke = Color
+                CustomTheme.SecondaryElementStroke = Color
+                CustomTheme.TabStroke = Color
+                CustomTheme.InputStroke = Color
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "✅ Apply Custom Theme",
+            Callback = function()
+                ApplyCustomTheme()
+                Runtime.CurrentThemeName = "Custom"
+                Runtime.SavePreferences()
+                Runtime.UpdatePreferenceDisplays()
+                LogSuccess("Custom theme applied", "Theme")
+            end
+        })
+
+        SettingsTab:CreateSection("📂 Theme Files")
+
+        SettingsTab:CreateParagraph({
+            Title = "File Support",
+            Content =
+                writefile and readfile and listfiles
+                and "Theme import and export are supported."
+                or "Theme files are unavailable in this executor."
+        })
+
+        SettingsTab:CreateButton({
+            Name = "💾 Export Current Custom Theme",
+            Callback = ExportTheme
+        })
+
+        ThemeFileDropdown = SettingsTab:CreateDropdown({
+            Name = "Saved Theme Files",
+            Options = GetThemeFiles(),
+            CurrentOption = {},
+            SearchBarEnabled = true,
+
+            Callback = function(Option)
+                SelectedThemeFile =
+                    type(Option) == "table"
+                    and Option[1]
+                    or Option
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "🔄 Refresh Theme Files",
+            Callback = RefreshThemeFiles
+        })
+
+        SettingsTab:CreateButton({
+            Name = "📥 Import Selected Theme",
+            Callback = ImportTheme
+        })
+
+        SettingsTab:CreateSection("💾 Saved Presets / Configs")
+
+        SettingsTab:CreateParagraph({
+            Title = "Feature Values & Presets",
+            Content =
+                writefile and readfile and isfile
+                and (
+                    "Configs are your saved presets. They store supported "
+                    .. "toggle, slider, dropdown, color, and keybind values."
+                )
+                or "Config saving is unavailable in this executor."
+        })
+
+        SettingsTab:CreateInput({
+            Name = "Config Name",
+            PlaceholderText = "Example: Grinding",
+            RemoveTextAfterFocusLost = false,
+            Callback = function(Value)
+                SelectedConfigName = Value
+            end
+        })
+
+        ConfigDropdown = SettingsTab:CreateDropdown({
+            Name = "Saved Configs",
+            Options = GetNamedConfigs(),
+            CurrentOption = {},
+            SearchBarEnabled = true,
+
+            Callback = function(Option)
+                SelectedConfigToLoad =
+                    type(Option) == "table"
+                    and Option[1]
+                    or Option
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "💾 Save New Config",
+            Callback = function()
+                SaveNamedConfig(false)
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "📂 Load Selected Config",
+            Callback = LoadNamedConfig
+        })
+
+        SettingsTab:CreateButton({
+            Name = "♻️ Overwrite Selected Config",
+            Callback = function()
+                SaveNamedConfig(true)
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "🔄 Refresh Config List",
+            Callback = RefreshConfigDropdown
+        })
+
+        SettingsTab:CreateSection("⭐ Favorites")
+
+        SettingsTab:CreateParagraph({
+            Title = "Favorite Features",
+            Content =
+                "Favorites are saved as a user preference and shown on Home."
+        })
+
+        Runtime.SelectedFavoriteFeature =
+            Runtime.SelectedFavoriteFeature
+            or Runtime.FavoriteOptions[1]
+
+        SettingsTab:CreateDropdown({
+            Name = "Select Feature",
+            Options = Runtime.FavoriteOptions,
+            CurrentOption = {Runtime.SelectedFavoriteFeature},
+            SearchBarEnabled = true,
+            Callback = function(Option)
+                Runtime.SelectedFavoriteFeature =
+                    type(Option) == "table"
+                    and Option[1]
+                    or Option
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "⭐ Add To Favorites",
+            Callback = function()
+                local Name = Runtime.SelectedFavoriteFeature
+
+                if not Name or Name == "" then
+                    Notify("Favorites", "Select a feature first.")
+                    return
+                end
+
+                Runtime.Favorites[Name] = true
+                Runtime.SavePreferences()
+                Runtime.UpdatePreferenceDisplays()
+                LogSuccess(
+                    "Added to favorites: " .. Name,
+                    "Favorites"
+                )
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "➖ Remove From Favorites",
+            Callback = function()
+                local Name = Runtime.SelectedFavoriteFeature
+
+                if not Name or Name == "" then
+                    Notify("Favorites", "Select a feature first.")
+                    return
+                end
+
+                Runtime.Favorites[Name] = nil
+                Runtime.SavePreferences()
+                Runtime.UpdatePreferenceDisplays()
+                LogInformation(
+                    "Removed from favorites: " .. Name,
+                    "Favorites"
+                )
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "🧹 Clear Favorites",
+            Callback = function()
+                Runtime.Favorites = {}
+                Runtime.SavePreferences()
+                Runtime.UpdatePreferenceDisplays()
+                LogInformation(
+                    "Favorites cleared",
+                    "Favorites"
+                )
+            end
+        })
+
+        SettingsTab:CreateSection("📐 Layout")
+
+        SettingsTab:CreateToggle({
+            Name = "Compact Mode",
+            CurrentValue = Runtime.CompactMode,
+            Flag = "Settings_CompactMode",
+            Callback = ApplyCompactMode
+        })
+
+        SettingsTab:CreateSection("⌨️ Interface Controls")
+
+        SettingsTab:CreateKeybind({
+            Name = "Open / Close UI",
+            CurrentKeybind = UIToggleKey.Name,
+            HoldToInteract = false,
+            CallOnChange = true,
+            Flag = "Settings_UIKeybind",
+
+            Callback = function(Key)
+                local KeyName =
+                    typeof(Key) == "EnumItem"
+                    and Key.Name
+                    or tostring(Key or "")
+
+                if Enum.KeyCode[KeyName] then
+                    UIToggleKey = Enum.KeyCode[KeyName]
+                    Runtime.SavePreferences()
+                    Runtime.UpdatePreferenceDisplays()
+                    Notify(
+                        "Keybind",
+                        "UI key changed to " .. KeyName
+                    )
+                    LogSuccess(
+                        "UI key changed to " .. KeyName,
+                        "Settings"
+                    )
+                end
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "👁️ Toggle UI Now",
+            Callback = function()
+                if Rayfield.ToggleUI then
+                    Rayfield:ToggleUI()
+                end
+            end
+        })
+
+        SettingsTab:CreateButton({
+            Name = "🔔 Test Notification",
+            Callback = function()
+                Notify(
+                    "🍌 BANANIHUB 🍌",
+                    "Settings are working."
+                )
+            end
+        })
+
+        if Runtime.CurrentThemeName ~= "Default"
+            and ThemePresets[Runtime.CurrentThemeName] then
+
+            task.defer(function()
+                ApplyPresetTheme(Runtime.CurrentThemeName)
+            end)
+        end
+
+        Runtime.UpdatePreferenceDisplays()
+
+        SettingsTab:CreateSection("🧹 Script Management")
+
+        SettingsTab:CreateButton({
+            Name = "🚨 Master Reset",
+            Callback = MasterReset
+        })
+
+        SettingsTab:CreateButton({
+            Name = "🗑️ Unload 🍌 BANANIHUB 🍌",
+            Callback = UnloadBananiHub
+        })
+    end)
+
+    if not BuildSuccess then
+        warn(
+            "BANANIHUB | Settings tab failed: "
+            .. tostring(BuildError)
+        )
+        LogError(
+            "Settings tab failed: "
+            .. tostring(BuildError),
+            "Settings"
+        )
+    end
+end
+
+end
+do
+    local UtilitySuccess, UtilityError = pcall(BuildUtilityTabs)
+
+    if not UtilitySuccess then
+        warn(
+            "BANANIHUB | Utility tabs failed: "
+            .. tostring(UtilityError)
+        )
+        LogError(
+            "Utility tabs failed: "
+            .. tostring(UtilityError),
+            "Utility Tabs"
+        )
+    end
+end
+
+TrackConnection(UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+    if GameProcessed or Unloaded then return end
+
+    if Input.KeyCode == UIToggleKey and Rayfield.ToggleUI then
+        Rayfield:ToggleUI()
+    end
+end))
+
+--==============================================================
+-- CHARACTER RESPAWN
+--==============================================================
+
+TrackConnection(Player.CharacterAdded:Connect(function(NewCharacter)
+    task.defer(function()
+        local H = NewCharacter:WaitForChild("Humanoid", 5)
+
+        if not H or Unloaded then
+            return
+        end
+
+        Camera = workspace.CurrentCamera or Camera
+
+        if FreezeEnabled then
+            NewCharacter:WaitForChild("HumanoidRootPart", 5)
+            SetFreeze(true)
+        else
+            UpdateMovement()
+        end
+
+        if NoclipEnabled then
+            SetNoclip(true)
+        end
+
+        if FreecamEnabled or Spectating then
+            SetCharacterLocked(true)
+        end
+    end)
+end))
+
+SetLoadingStage("Loading preferences...")
+RefreshPlayers()
+RefreshWaypoints()
+Runtime.UpdatePreferenceDisplays()
+
+SetLoadingStage("Restoring config...")
+
+if Runtime.RefreshStats then
+    Runtime.RefreshStats(true)
+end
+
+if Runtime.RefreshServerInfo then
+    Runtime.RefreshServerInfo()
+end
+
+LogInformation("BananiHub v" .. BANANIHUB_VERSION .. " loaded", "System")
+SetLoadingStage("Ready")
