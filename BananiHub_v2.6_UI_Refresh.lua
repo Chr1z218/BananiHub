@@ -32,7 +32,7 @@ local PlaceInfo = {
     Creator = "Loading...",
     IconImageAssetId = 0
 }
-local BANANIHUB_VERSION = "2.6"
+local BANANIHUB_VERSION = "2.7"
 local UIToggleKey = Enum.KeyCode.L
 --==============================================================
 -- RAYFIELD
@@ -253,8 +253,8 @@ local DeleteWaypointDropdown
 Runtime.WaypointOrder = Runtime.WaypointOrder or {}
 Runtime.WaypointRoute = Runtime.WaypointRoute or {}
 Runtime.RouteCurrentIndex = 1
-Runtime.RouteDelay = 1
-Runtime.RouteRepeatMode = "Once"
+Runtime.RouteDelay = 0.5
+Runtime.RouteLoop = false
 Runtime.RouteRunning = false
 Runtime.RoutePaused = false
 Runtime.RouteStatus = "Idle"
@@ -1862,6 +1862,7 @@ local function UpdatePlayerESP(Target)
         HealthText.TextStrokeTransparency = 0.3
         HealthText.Parent = Billboard
     end
+    Billboard.Enabled = true  -- re-enable if the distance cull hid it earlier
     local Box = Billboard:FindFirstChild("Box")
     local HealthBack = Billboard:FindFirstChild("HealthBack")
     local HealthText = Billboard:FindFirstChild("HealthText")
@@ -1894,10 +1895,20 @@ local function SetPlayerESP()
     local Accumulator = 0
     ESPConnection = RunService.Heartbeat:Connect(function(Delta)
         Accumulator += Delta
-        if Accumulator < 0.10 then return end
+        if Accumulator < 0.20 then return end  -- 5 refreshes/sec is smooth and far lighter than 10
         Accumulator = 0
+        local MyRoot = Root()
+        local Origin = MyRoot and MyRoot.Position
         for _, Target in ipairs(Players:GetPlayers()) do
-            UpdatePlayerESP(Target)
+            -- Skip far players: their ESP isn't readable anyway and updating it wastes frames.
+            local TargetRoot = Target ~= Player and Target.Character
+                and Target.Character:FindFirstChild("HumanoidRootPart")
+            if Origin and TargetRoot and (TargetRoot.Position - Origin).Magnitude > 800 then
+                local Existing = TargetRoot:FindFirstChild("BananiESP")
+                if Existing then Existing.Enabled = false end
+            else
+                UpdatePlayerESP(Target)
+            end
         end
     end)
 end
@@ -2281,6 +2292,7 @@ Runtime.UpdateRouteUI = function()
             Title = "Route Status",
             Content =
                 "Status: " .. tostring(Runtime.RouteStatus)
+                .. "\nMode: " .. (Runtime.RouteLoop and "Loop Route" or "Play Once")
                 .. "\nWaypoint: " .. CheckpointText
                 .. "\nTravel: " .. tostring(Runtime.RouteTravelMode)
                 .. "\nTween Speed: " .. tostring(Runtime.TweenSpeed) .. " studs/s"
@@ -2302,43 +2314,51 @@ Runtime.StopWaypointRoute = function(Silent)
         Notify("Route", "Stopped. Next play starts from waypoint 1.")
     end
 end
-Runtime.PauseWaypointRoute = function()
+-- Pause / Resume toggle: one button flips between the two.
+Runtime.TogglePauseRoute = function()
     if not Runtime.RouteRunning then
         Notify("Route", "The route is not running.")
         return
     end
     if Runtime.RoutePaused then
-        Notify("Route", "The route is already paused.")
-        return
+        Runtime.RoutePaused = false
+        Runtime.RouteStatus = "Running"
+        Runtime.UpdateRouteUI()
+        Notify("Route", "Resumed from waypoint " .. tostring(Runtime.RouteCurrentIndex) .. ".")
+    else
+        Runtime.RoutePaused = true
+        Runtime.RouteStatus = "Paused"
+        CancelTween()
+        Runtime.UpdateRouteUI()
+        Notify("Route", "Paused at waypoint " .. tostring(Runtime.RouteCurrentIndex) .. ".")
     end
-    Runtime.RoutePaused = true
-    Runtime.RouteStatus = "Paused"
-    CancelTween()
-    Runtime.UpdateRouteUI()
-    Notify("Route", "Paused at waypoint " .. tostring(Runtime.RouteCurrentIndex) .. ".")
 end
-Runtime.PlayWaypointRoute = function()
+-- Starts the route. Loop=false runs once and stops at the end;
+-- Loop=true repeats until you Stop. If already paused, this resumes.
+Runtime.StartRoute = function(Loop)
     if #Runtime.WaypointRoute == 0 then
         Notify("Route", "Add at least one waypoint to the route first.")
         return
     end
     if Runtime.RouteRunning then
         if Runtime.RoutePaused then
+            Runtime.RouteLoop = Loop == true
             Runtime.RoutePaused = false
             Runtime.RouteStatus = "Running"
             Runtime.UpdateRouteUI()
             Notify("Route", "Resumed from waypoint " .. tostring(Runtime.RouteCurrentIndex) .. ".")
         else
-            Notify("Route", "The route is already running.")
+            Notify("Route", "Already running. Stop first to switch mode.")
         end
         return
     end
+    Runtime.RouteLoop = Loop == true
     Runtime.RouteCurrentIndex = math.clamp(Runtime.RouteCurrentIndex, 1, #Runtime.WaypointRoute)
     Runtime.RouteRunId += 1
     local ThisRun = Runtime.RouteRunId
     Runtime.RouteRunning = true
     Runtime.RoutePaused = false
-    Runtime.RouteStatus = "Running"
+    Runtime.RouteStatus = Runtime.RouteLoop and "Looping" or "Running"
     Runtime.UpdateRouteUI()
     task.spawn(function()
         while Runtime.RouteRunning and Runtime.RouteRunId == ThisRun and not Unloaded do
@@ -2348,7 +2368,18 @@ Runtime.PlayWaypointRoute = function()
             end
             if not Runtime.RouteRunning or Runtime.RouteRunId ~= ThisRun or Unloaded then break end
             if Runtime.RouteCurrentIndex > #Runtime.WaypointRoute then
-                Runtime.RouteCurrentIndex = 1  -- Play always loops back to the start.
+                if Runtime.RouteLoop then
+                    Runtime.RouteCurrentIndex = 1
+                else
+                    -- Play Once finished: stop cleanly and reset to the start.
+                    Runtime.RouteRunning = false
+                    Runtime.RoutePaused = false
+                    Runtime.RouteStatus = "Completed"
+                    Runtime.RouteCurrentIndex = 1
+                    Runtime.UpdateRouteUI()
+                    Notify("Route", "Route finished.")
+                    break
+                end
             end
             local WaypointName = Runtime.WaypointRoute[Runtime.RouteCurrentIndex]
             local TargetCFrame = DecodeCFrame(Waypoints[WaypointName])
@@ -2363,7 +2394,6 @@ Runtime.PlayWaypointRoute = function()
                 Runtime.StopWaypointRoute(true)
                 break
             end
-            Runtime.RouteStatus = "Running"
             Runtime.UpdateRouteUI()
             if Runtime.RouteTravelMode == "Tween" then
                 TweenRootTo(TargetCFrame)
@@ -2389,6 +2419,9 @@ Runtime.PlayWaypointRoute = function()
         end
     end)
 end
+-- Back-compat aliases.
+Runtime.PlayWaypointRoute = function() Runtime.StartRoute(false) end
+Runtime.PauseWaypointRoute = Runtime.TogglePauseRoute
 --==============================================================
 -- TELEPORT / WAYPOINTS TAB
 --==============================================================
@@ -2621,21 +2654,22 @@ do
     })
     TeleportTab:CreateDropdown({
         Name = "Delay Between Waypoints",
-        Options = {"1 Second", "2 Seconds", "3 Seconds", "4 Seconds", "5 Seconds",
+        Options = {"0.5 Seconds", "1 Second", "2 Seconds", "3 Seconds", "4 Seconds", "5 Seconds",
             "6 Seconds", "7 Seconds", "8 Seconds", "9 Seconds", "10 Seconds"},
-        CurrentOption = {"1 Second"}, Flag = "Route_Delay",
+        CurrentOption = {"0.5 Seconds"}, Flag = "Route_Delay",
         Callback = function(Option)
             local Text = type(Option) == "table" and Option[1] or Option
-            Runtime.RouteDelay = math.clamp(tonumber(tostring(Text):match("%d+")) or 1, 1, 10)
+            Runtime.RouteDelay = math.clamp(tonumber(tostring(Text):match("[%d%.]+")) or 0.5, 0.5, 10)
             Runtime.UpdateRouteUI()
         end
     })
     Runtime.RouteStatusParagraph = TeleportTab:CreateParagraph({
         Title = "Route Status",
-        Content = "Status: Idle\nWaypoint: 0 / 0\nTravel: Teleport\nTween Speed: 80 studs/s\nDelay: 1 Second"
+        Content = "Status: Idle\nMode: Play Once\nWaypoint: 0 / 0\nTravel: Teleport\nTween Speed: 80 studs/s\nDelay: 0.5 Seconds"
     })
-    TeleportTab:CreateButton({ Name = "▶ Play (loops the route)", Callback = Runtime.PlayWaypointRoute })
-    TeleportTab:CreateButton({ Name = "⏸ Pause (hold here)", Callback = Runtime.PauseWaypointRoute })
+    TeleportTab:CreateButton({ Name = "▶ Play Once", Callback = function() Runtime.StartRoute(false) end })
+    TeleportTab:CreateButton({ Name = "🔁 Loop Route", Callback = function() Runtime.StartRoute(true) end })
+    TeleportTab:CreateButton({ Name = "⏸ Pause / Resume", Callback = Runtime.TogglePauseRoute })
     TeleportTab:CreateButton({
         Name = "⏹ Stop (reset to waypoint 1)",
         Callback = function() Runtime.StopWaypointRoute(false) end
@@ -2960,11 +2994,11 @@ do
             end
         })
         do
-            local Accumulator = 1
+            local Accumulator = 2
             StatsStatusConnection = RunService.Heartbeat:Connect(function(Delta)
                 if Unloaded then return end
                 Accumulator += Delta
-                if Accumulator < 1 then return end
+                if Accumulator < 2 then return end  -- leaderstat/tool scan is heavy; 2s is plenty
                 Accumulator = 0
                 Runtime.RefreshStats(false)
             end)
@@ -3058,8 +3092,8 @@ do
         ["Noclip"] = "Noclip lets your character pass through collidable parts while enabled.",
         ["Spider Climb"] = "Face a wall and hold W to climb upward.",
         ["Saved Waypoints"] = "Open Travel > Saved Waypoints. Name a spot, save it, then Teleport or Tween to any saved waypoint.",
-        ["Route Builder"] = "Add saved waypoints to a route in the order you want. Pick Teleport or Tween, set tween speed and a 1-10s delay, then Play, Pause, or Stop.",
-        ["Route Play"] = "Play runs the route and keeps looping. Pause holds at your current waypoint and resumes from there. Stop halts and resets to waypoint 1.",
+        ["Route Builder"] = "Add saved waypoints to a route in the order you want. Pick Teleport or Tween, set tween speed and a 0.5-10s delay (default 0.5s), then use the playback buttons.",
+        ["Route Play"] = "Play Once runs the route a single time and stops at the end. Loop Route repeats until you Stop. Pause / Resume holds at your current waypoint and continues from there. Stop halts and resets to waypoint 1.",
         ["Freecam"] = "Open Camera > Freecam Controls. WASD to move, Q/E down/up, hold right-click to look.",
         ["Box ESP"] = "Draws a box around visible player characters.",
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
