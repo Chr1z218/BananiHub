@@ -37,7 +37,7 @@ local PlaceInfo = {
     IconImageAssetId = 0
 }
 
-local BANANIHUB_VERSION = "2.3.1"
+local BANANIHUB_VERSION = "2.4"
 local UIToggleKey = Enum.KeyCode.L
 --==============================================================
 -- RAYFIELD
@@ -287,6 +287,18 @@ local FreecamOriginalFOV = Camera.FieldOfView
 local Waypoints = {}
 local WaypointDropdown
 local DeleteWaypointDropdown
+
+Runtime.WaypointOrder = Runtime.WaypointOrder or {}
+Runtime.WaypointRoute = Runtime.WaypointRoute or {}
+Runtime.RouteCurrentIndex = 1
+Runtime.RouteDelay = 1
+Runtime.RouteRepeatMode = "Once"
+Runtime.RouteRunning = false
+Runtime.RoutePaused = false
+Runtime.RouteStatus = "Idle"
+Runtime.RouteRunId = 0
+Runtime.RouteSelectedWaypoint = nil
+Runtime.RouteSelectedCheckpoint = nil
 local PlayerDropdown
 local SpectatorDropdown
 local Dashboard
@@ -808,40 +820,104 @@ local function DecodeCFrame(Data)
     return CFrame.new(table.unpack(Data))
 end
 
-local function LoadWaypoints()
-    Waypoints = {}
-    if isfile and readfile and isfile(WaypointFile) then
-        local Success, Data = pcall(function()
-            return game:GetService("HttpService"):JSONDecode(readfile(WaypointFile))
-        end)
-        if Success and type(Data) == "table" then
-            Waypoints = Data
+Runtime.NormalizeWaypointOrder = function()
+    local CleanOrder = {}
+    local Seen = {}
+
+    for _, Name in ipairs(Runtime.WaypointOrder or {}) do
+        if type(Name) == "string"
+            and Waypoints[Name] ~= nil
+            and not Seen[Name] then
+
+            Seen[Name] = true
+            table.insert(CleanOrder, Name)
         end
     end
+
+    local Missing = {}
+
+    for Name in pairs(Waypoints) do
+        if type(Name) == "string" and not Seen[Name] then
+            table.insert(Missing, Name)
+        end
+    end
+
+    -- Old waypoint files did not store order. Sorting is used only once
+    -- during migration; new saves preserve the exact save order forever.
+    table.sort(Missing)
+
+    for _, Name in ipairs(Missing) do
+        table.insert(CleanOrder, Name)
+    end
+
+    Runtime.WaypointOrder = CleanOrder
+end
+
+local function LoadWaypoints()
+    Waypoints = {}
+    Runtime.WaypointOrder = {}
+
+    if isfile and readfile and isfile(WaypointFile) then
+        local Success, Data = pcall(function()
+            return HttpService:JSONDecode(readfile(WaypointFile))
+        end)
+
+        if Success and type(Data) == "table" then
+            if type(Data.Points) == "table" then
+                Waypoints = Data.Points
+                Runtime.WaypointOrder =
+                    type(Data.Order) == "table"
+                    and Data.Order
+                    or {}
+            else
+                -- Migrate the old name -> CFrame dictionary format.
+                Waypoints = Data
+            end
+        end
+    end
+
+    Runtime.NormalizeWaypointOrder()
 end
 
 local function SaveWaypoints()
-    if writefile then
-        pcall(function()
-            local Encoded = game:GetService("HttpService"):JSONEncode(Waypoints)
-            writefile(WaypointFile, Encoded)
-        end)
-    end
+    if not writefile then return end
+
+    Runtime.NormalizeWaypointOrder()
+
+    pcall(function()
+        local Encoded = HttpService:JSONEncode({
+            Version = 2,
+            Order = Runtime.WaypointOrder,
+            Points = Waypoints
+        })
+
+        writefile(WaypointFile, Encoded)
+    end)
 end
 
 local function GetWaypointNames()
-    local Names = {}
-    for Name in pairs(Waypoints) do
-        table.insert(Names, Name)
-    end
-    table.sort(Names)
-    return Names
+    Runtime.NormalizeWaypointOrder()
+    return table.clone(Runtime.WaypointOrder)
 end
 
 local function RefreshWaypoints()
     local Names = GetWaypointNames()
-    if WaypointDropdown then WaypointDropdown:Refresh(Names) end
-    if DeleteWaypointDropdown then DeleteWaypointDropdown:Refresh(Names) end
+
+    if WaypointDropdown then
+        WaypointDropdown:Refresh(Names)
+    end
+
+    if DeleteWaypointDropdown then
+        DeleteWaypointDropdown:Refresh(Names)
+    end
+
+    if Runtime.RefreshRouteDropdowns then
+        Runtime.RefreshRouteDropdowns()
+    end
+
+    if Runtime.UpdateRouteUI then
+        Runtime.UpdateRouteUI()
+    end
 end
 
 LoadWaypoints()
@@ -2814,6 +2890,17 @@ do
     HomeTab:CreateSection("📜 Changelog")
 
     HomeTab:CreateParagraph({
+        Title = "v2.4",
+        Content =
+            "• Added ordered waypoint saving with no 10-waypoint reset"
+            .. "\n• Added selection-order Route Builder"
+            .. "\n• Added Once and infinite Repeat modes"
+            .. "\n• Added 1–10 second delay selector"
+            .. "\n• Added Play, Pause, Stop, Clear Route, and Remove Checkpoint"
+            .. "\n• Added duplicate protection and live route status"
+    })
+
+    HomeTab:CreateParagraph({
         Title = "v2.3 • Final",
         Content =
             "• Moved server information and joining controls into Home"
@@ -3003,9 +3090,8 @@ PlayerTab:CreateToggle({
 })
 
 PlayerTab:CreateButton({
-    Name = "♾️InfYield",
+    Name = "Hub",
     Callback = function()
-   loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
     end
 })
 
@@ -3128,11 +3214,20 @@ local WaypointName = ""
 local SelectedWaypoint = nil
 local SelectedDeleteWaypoint = nil
 
+TeleportTab:CreateParagraph({
+    Title = "Saved Waypoint Order",
+    Content =
+        "Waypoints stay in the order they were first saved. "
+        .. "There is no 10-waypoint reset."
+})
+
 TeleportTab:CreateInput({
     Name = "Waypoint Name",
     PlaceholderText = "Example: Shop",
     RemoveTextAfterFocusLost = false,
-    Callback = function(Text) WaypointName = Text end
+    Callback = function(Text)
+        WaypointName = Text
+    end
 })
 
 TeleportTab:CreateButton({
@@ -3140,12 +3235,30 @@ TeleportTab:CreateButton({
     Callback = function()
         local R = Root()
         local CleanName = tostring(WaypointName):match("^%s*(.-)%s*$")
-        if not R or CleanName == "" then Notify("Waypoint", "Enter a waypoint name first.") return end
+
+        if not R or CleanName == "" then
+            Notify("Waypoint", "Enter a waypoint name first.")
+            return
+        end
+
+        local IsNewWaypoint = Waypoints[CleanName] == nil
         Waypoints[CleanName] = EncodeCFrame(R.CFrame)
+
+        if IsNewWaypoint then
+            table.insert(Runtime.WaypointOrder, CleanName)
+        end
+
         SaveWaypoints()
         RefreshWaypoints()
         Runtime.UpdatePreferenceDisplays()
-        Notify("Waypoint Saved", CleanName .. " saved for PlaceId " .. game.PlaceId)
+
+        Notify(
+            "Waypoint Saved",
+            IsNewWaypoint
+                and (CleanName .. " added to the end of the saved list.")
+                or (CleanName .. " position updated without changing its order.")
+        )
+
         LogSuccess("Waypoint saved: " .. CleanName, "Waypoints")
     end
 })
@@ -3154,15 +3267,28 @@ WaypointDropdown = TeleportTab:CreateDropdown({
     Name = "Waypoint Selector",
     Options = GetWaypointNames(),
     CurrentOption = {},
-    Callback = function(Option) SelectedWaypoint = type(Option) == "table" and Option[1] or Option end
+    SearchBarEnabled = true,
+    Callback = function(Option)
+        SelectedWaypoint =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+    end
 })
 
 TeleportTab:CreateButton({
     Name = "📍 Teleport To Waypoint",
     Callback = function()
         local R = Root()
-        local CF = SelectedWaypoint and DecodeCFrame(Waypoints[SelectedWaypoint])
-        if R and CF then R.CFrame = CF end
+        local CF =
+            SelectedWaypoint
+            and DecodeCFrame(Waypoints[SelectedWaypoint])
+
+        if R and CF then
+            R.CFrame = CF
+        else
+            Notify("Waypoint", "Select a valid saved waypoint first.")
+        end
     end
 })
 
@@ -3170,24 +3296,487 @@ DeleteWaypointDropdown = TeleportTab:CreateDropdown({
     Name = "Delete Selector",
     Options = GetWaypointNames(),
     CurrentOption = {},
-    Callback = function(Option) SelectedDeleteWaypoint = type(Option) == "table" and Option[1] or Option end
+    SearchBarEnabled = true,
+    Callback = function(Option)
+        SelectedDeleteWaypoint =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+    end
 })
 
 TeleportTab:CreateButton({
     Name = "🗑️ Delete Waypoint",
     Callback = function()
-        if SelectedDeleteWaypoint and Waypoints[SelectedDeleteWaypoint] then
-            local Deleted = SelectedDeleteWaypoint
-            Waypoints[Deleted] = nil
-            SelectedDeleteWaypoint = nil
-            SaveWaypoints()
-            RefreshWaypoints()
-            Runtime.UpdatePreferenceDisplays()
-            Notify("Waypoint Deleted", Deleted)
-            LogInformation("Waypoint deleted: " .. Deleted, "Waypoints")
+        if not SelectedDeleteWaypoint
+            or not Waypoints[SelectedDeleteWaypoint] then
+
+            Notify("Waypoint", "Select a waypoint to delete first.")
+            return
         end
+
+        local Deleted = SelectedDeleteWaypoint
+        Waypoints[Deleted] = nil
+        SelectedDeleteWaypoint = nil
+
+        for Index = #Runtime.WaypointOrder, 1, -1 do
+            if Runtime.WaypointOrder[Index] == Deleted then
+                table.remove(Runtime.WaypointOrder, Index)
+            end
+        end
+
+        for Index = #Runtime.WaypointRoute, 1, -1 do
+            if Runtime.WaypointRoute[Index] == Deleted then
+                table.remove(Runtime.WaypointRoute, Index)
+            end
+        end
+
+        Runtime.RouteCurrentIndex = math.clamp(
+            Runtime.RouteCurrentIndex,
+            1,
+            math.max(#Runtime.WaypointRoute, 1)
+        )
+
+        SaveWaypoints()
+        RefreshWaypoints()
+        Runtime.UpdatePreferenceDisplays()
+
+        Notify("Waypoint Deleted", Deleted)
+        LogInformation("Waypoint deleted: " .. Deleted, "Waypoints")
     end
 })
+
+TeleportTab:CreateSection("🧭 Auto Teleport Route")
+
+TeleportTab:CreateParagraph({
+    Title = "How Route Order Works",
+    Content =
+        "Select saved waypoints one at a time. "
+        .. "The route follows the exact order you select them."
+})
+
+Runtime.RoutePreviewParagraph = TeleportTab:CreateParagraph({
+    Title = "Current Route (0 Stops)",
+    Content = "No checkpoints selected."
+})
+
+Runtime.RouteStatusParagraph = TeleportTab:CreateParagraph({
+    Title = "Route Status",
+    Content =
+        "Status: Idle"
+        .. "\nCheckpoint: 0 / 0"
+        .. "\nRepeat: Once"
+        .. "\nDelay: 1 Second"
+})
+
+Runtime.GetRouteRemoveOptions = function()
+    local Options = {}
+
+    for Index, Name in ipairs(Runtime.WaypointRoute) do
+        table.insert(Options, tostring(Index) .. ". " .. Name)
+    end
+
+    return Options
+end
+
+Runtime.RefreshRouteDropdowns = function()
+    if Runtime.RouteAddDropdown then
+        Runtime.RouteAddDropdown:Refresh(GetWaypointNames())
+    end
+
+    if Runtime.RouteRemoveDropdown then
+        Runtime.RouteRemoveDropdown:Refresh(
+            Runtime.GetRouteRemoveOptions()
+        )
+    end
+end
+
+Runtime.UpdateRouteUI = function()
+    local Route = Runtime.WaypointRoute
+    local Lines = {}
+
+    for Index, Name in ipairs(Route) do
+        local Marker = ""
+
+        if Runtime.RouteRunning
+            and Index == Runtime.RouteCurrentIndex then
+
+            Marker = Runtime.RoutePaused
+                and "  ← Paused"
+                or "  ← Current"
+        end
+
+        table.insert(
+            Lines,
+            tostring(Index) .. ". " .. tostring(Name) .. Marker
+        )
+    end
+
+    if Runtime.RoutePreviewParagraph then
+        Runtime.RoutePreviewParagraph:Set({
+            Title =
+                "Current Route ("
+                .. tostring(#Route)
+                .. (#Route == 1 and " Stop)" or " Stops)"),
+            Content = #Lines > 0
+                and table.concat(Lines, "\n")
+                or "No checkpoints selected."
+        })
+    end
+
+    if Runtime.RouteStatusParagraph then
+        local CheckpointText = #Route > 0
+            and (
+                tostring(
+                    math.clamp(
+                        Runtime.RouteCurrentIndex,
+                        1,
+                        #Route
+                    )
+                )
+                .. " / "
+                .. tostring(#Route)
+            )
+            or "0 / 0"
+
+        Runtime.RouteStatusParagraph:Set({
+            Title = "Route Status",
+            Content =
+                "Status: " .. tostring(Runtime.RouteStatus)
+                .. "\nCheckpoint: " .. CheckpointText
+                .. "\nRepeat: "
+                .. tostring(Runtime.RouteRepeatMode)
+                .. "\nDelay: "
+                .. tostring(Runtime.RouteDelay)
+                .. (Runtime.RouteDelay == 1 and " Second" or " Seconds")
+        })
+    end
+
+    Runtime.RefreshRouteDropdowns()
+end
+
+Runtime.StopWaypointRoute = function(Silent)
+    Runtime.RouteRunId += 1
+    Runtime.RouteRunning = false
+    Runtime.RoutePaused = false
+    Runtime.RouteStatus = "Idle"
+    Runtime.RouteCurrentIndex = 1
+    Runtime.UpdateRouteUI()
+
+    if not Silent then
+        Notify("Waypoint Route", "Route stopped and reset to checkpoint 1.")
+    end
+end
+
+Runtime.PauseWaypointRoute = function()
+    if not Runtime.RouteRunning then
+        Notify("Waypoint Route", "The route is not running.")
+        return
+    end
+
+    if Runtime.RoutePaused then
+        Notify("Waypoint Route", "The route is already paused.")
+        return
+    end
+
+    Runtime.RoutePaused = true
+    Runtime.RouteStatus = "Paused"
+    Runtime.UpdateRouteUI()
+    Notify("Waypoint Route", "Route paused.")
+end
+
+Runtime.PlayWaypointRoute = function()
+    if #Runtime.WaypointRoute == 0 then
+        Notify("Waypoint Route", "Add at least one checkpoint first.")
+        return
+    end
+
+    if Runtime.RouteRunning then
+        if Runtime.RoutePaused then
+            Runtime.RoutePaused = false
+            Runtime.RouteStatus = "Running"
+            Runtime.UpdateRouteUI()
+            Notify("Waypoint Route", "Route resumed.")
+        else
+            Notify("Waypoint Route", "The route is already running.")
+        end
+
+        return
+    end
+
+    Runtime.RouteCurrentIndex = math.clamp(
+        Runtime.RouteCurrentIndex,
+        1,
+        #Runtime.WaypointRoute
+    )
+
+    Runtime.RouteRunId += 1
+    local ThisRun = Runtime.RouteRunId
+
+    Runtime.RouteRunning = true
+    Runtime.RoutePaused = false
+    Runtime.RouteStatus = "Running"
+    Runtime.UpdateRouteUI()
+
+    task.spawn(function()
+        while Runtime.RouteRunning
+            and Runtime.RouteRunId == ThisRun
+            and not Unloaded do
+
+            while Runtime.RoutePaused
+                and Runtime.RouteRunning
+                and Runtime.RouteRunId == ThisRun
+                and not Unloaded do
+
+                task.wait(0.05)
+            end
+
+            if not Runtime.RouteRunning
+                or Runtime.RouteRunId ~= ThisRun
+                or Unloaded then
+
+                break
+            end
+
+            if Runtime.RouteCurrentIndex > #Runtime.WaypointRoute then
+                if Runtime.RouteRepeatMode == "Repeat" then
+                    Runtime.RouteCurrentIndex = 1
+                else
+                    Runtime.RouteRunning = false
+                    Runtime.RoutePaused = false
+                    Runtime.RouteStatus = "Completed"
+                    Runtime.RouteCurrentIndex = 1
+                    Runtime.UpdateRouteUI()
+                    Notify("Waypoint Route", "Route completed once.")
+                    break
+                end
+            end
+
+            local WaypointName =
+                Runtime.WaypointRoute[Runtime.RouteCurrentIndex]
+            local WaypointData = Waypoints[WaypointName]
+            local TargetCFrame = DecodeCFrame(WaypointData)
+            local R = Root()
+
+            if not WaypointData or not TargetCFrame then
+                Notify(
+                    "Waypoint Route",
+                    tostring(WaypointName)
+                    .. " is missing or invalid. Route stopped."
+                )
+                Runtime.StopWaypointRoute(true)
+                break
+            end
+
+            if not R then
+                Notify(
+                    "Waypoint Route",
+                    "Your character is unavailable. Route stopped."
+                )
+                Runtime.StopWaypointRoute(true)
+                break
+            end
+
+            Runtime.RouteStatus = "Running"
+            Runtime.UpdateRouteUI()
+            R.CFrame = TargetCFrame
+
+            local HasAnotherTeleport =
+                Runtime.RouteCurrentIndex < #Runtime.WaypointRoute
+                or Runtime.RouteRepeatMode == "Repeat"
+
+            if HasAnotherTeleport then
+                local Waited = 0
+
+                while Waited < Runtime.RouteDelay
+                    and Runtime.RouteRunning
+                    and Runtime.RouteRunId == ThisRun
+                    and not Unloaded do
+
+                    if Runtime.RoutePaused then
+                        task.wait(0.05)
+                    else
+                        local Step = math.min(
+                            0.10,
+                            Runtime.RouteDelay - Waited
+                        )
+
+                        task.wait(Step)
+                        Waited += Step
+                    end
+                end
+            end
+
+            if Runtime.RouteRunning
+                and Runtime.RouteRunId == ThisRun then
+
+                Runtime.RouteCurrentIndex += 1
+            end
+        end
+    end)
+end
+
+Runtime.RouteAddDropdown = TeleportTab:CreateDropdown({
+    Name = "Add Waypoint To Route",
+    Options = GetWaypointNames(),
+    CurrentOption = {},
+    SearchBarEnabled = true,
+    Callback = function(Option)
+        local Name =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+
+        if not Name or not Waypoints[Name] then
+            return
+        end
+
+        for _, ExistingName in ipairs(Runtime.WaypointRoute) do
+            if ExistingName == Name then
+                Notify(
+                    "Duplicate Protection",
+                    Name .. " is already in the route."
+                )
+                return
+            end
+        end
+
+        table.insert(Runtime.WaypointRoute, Name)
+        Runtime.RouteSelectedWaypoint = nil
+        Runtime.UpdateRouteUI()
+
+        Notify(
+            "Checkpoint Added",
+            tostring(#Runtime.WaypointRoute)
+            .. ". "
+            .. Name
+        )
+    end
+})
+
+Runtime.RouteRemoveDropdown = TeleportTab:CreateDropdown({
+    Name = "Remove Checkpoint Selector",
+    Options = Runtime.GetRouteRemoveOptions(),
+    CurrentOption = {},
+    SearchBarEnabled = true,
+    Callback = function(Option)
+        Runtime.RouteSelectedCheckpoint =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "❌ Remove Checkpoint",
+    Callback = function()
+        local Selected = Runtime.RouteSelectedCheckpoint
+        local RemoveIndex =
+            tonumber(tostring(Selected or ""):match("^(%d+)%."))
+
+        if not RemoveIndex or not Runtime.WaypointRoute[RemoveIndex] then
+            Notify("Waypoint Route", "Select a checkpoint to remove.")
+            return
+        end
+
+        local RemovedName =
+            table.remove(Runtime.WaypointRoute, RemoveIndex)
+
+        if RemoveIndex < Runtime.RouteCurrentIndex then
+            Runtime.RouteCurrentIndex -= 1
+        end
+
+        Runtime.RouteCurrentIndex = math.clamp(
+            Runtime.RouteCurrentIndex,
+            1,
+            math.max(#Runtime.WaypointRoute, 1)
+        )
+
+        Runtime.RouteSelectedCheckpoint = nil
+
+        if #Runtime.WaypointRoute == 0 then
+            Runtime.StopWaypointRoute(true)
+        else
+            Runtime.UpdateRouteUI()
+        end
+
+        Notify("Checkpoint Removed", tostring(RemovedName))
+    end
+})
+
+TeleportTab:CreateDropdown({
+    Name = "Repeat Mode",
+    Options = {"Once", "Repeat"},
+    CurrentOption = {"Once"},
+    Flag = "Teleport_RouteRepeat",
+    Callback = function(Option)
+        Runtime.RouteRepeatMode =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+
+        Runtime.UpdateRouteUI()
+    end
+})
+
+TeleportTab:CreateDropdown({
+    Name = "Teleport Delay",
+    Options = {
+        "1 Second",
+        "2 Seconds",
+        "3 Seconds",
+        "4 Seconds",
+        "5 Seconds",
+        "6 Seconds",
+        "7 Seconds",
+        "8 Seconds",
+        "9 Seconds",
+        "10 Seconds"
+    },
+    CurrentOption = {"1 Second"},
+    Flag = "Teleport_RouteDelay",
+    Callback = function(Option)
+        local Text =
+            type(Option) == "table"
+            and Option[1]
+            or Option
+
+        Runtime.RouteDelay =
+            math.clamp(tonumber(tostring(Text):match("%d+")) or 1, 1, 10)
+
+        Runtime.UpdateRouteUI()
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "▶ Play Route",
+    Callback = Runtime.PlayWaypointRoute
+})
+
+TeleportTab:CreateButton({
+    Name = "⏸ Pause Route",
+    Callback = Runtime.PauseWaypointRoute
+})
+
+TeleportTab:CreateButton({
+    Name = "⏹ Stop Route",
+    Callback = function()
+        Runtime.StopWaypointRoute(false)
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "🗑 Clear Route",
+    Callback = function()
+        Runtime.StopWaypointRoute(true)
+        table.clear(Runtime.WaypointRoute)
+        Runtime.RouteSelectedCheckpoint = nil
+        Runtime.UpdateRouteUI()
+        Notify("Waypoint Route", "Route cleared.")
+    end
+})
+
+Runtime.UpdateRouteUI()
 
 end
 
@@ -4251,6 +4840,12 @@ local function MasterReset()
 
     pcall(SetPlayerESP)
     pcall(RemoveTeleportTool)
+
+    if Runtime.StopWaypointRoute then
+        pcall(function()
+            Runtime.StopWaypointRoute(true)
+        end)
+    end
     pcall(UpdateMovement)
     pcall(function() SetCharacterLocked(false) end)
 
@@ -4306,6 +4901,12 @@ local function UnloadBananiHub()
     HealthESPEnabled = false
     pcall(SetPlayerESP)
     pcall(RemoveTeleportTool)
+
+    if Runtime.StopWaypointRoute then
+        pcall(function()
+            Runtime.StopWaypointRoute(true)
+        end)
+    end
 
     pcall(function() SetNoclip(false) end)
     AutoJumpEnabled = false
