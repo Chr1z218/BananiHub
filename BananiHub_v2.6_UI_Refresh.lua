@@ -120,9 +120,14 @@ local Spectating = false
 local AntiVoidEnabled = false
 local AntiRagdollEnabled = false
 local SpiderClimbEnabled = false
+local AutoWalkEnabled = false
+local AutoWalkMode = "Camera"   -- "Camera" or "Character"
+local AutoWalkJump = false
 local BoxESPEnabled = false
 local HealthESPEnabled = false
 local FlySpeed = 50
+local FlyResponsiveness = 12   -- how fast fly ramps to target speed
+local FlyUpright = true        -- keep body level instead of pitching with the camera
 local WalkSpeed = 16
 local JumpPower = 50
 local FreecamSpeed = 50
@@ -150,6 +155,7 @@ local StatsStatusConnection
 local AntiVoidConnection
 local AntiRagdollConnection
 local SpiderClimbConnection
+local AutoWalkConnection
 local ESPConnection
 local Unloaded = false
 local Runtime = {
@@ -176,6 +182,7 @@ local Runtime = {
     Favorites = {},
     FavoriteOptions = {
         "Fly",
+        "Auto Walk",
         "Noclip",
         "Spider Climb",
         "Fast Walk",
@@ -777,6 +784,10 @@ LoadWaypoints()
 --==============================================================
 -- FLY
 --==============================================================
+local FlyMoverNames = {
+    "BananiFlyVelocity", "BananiFlyGyro",
+    "BananiFlyAttach", "BananiFlyLinear", "BananiFlyAlign"
+}
 local function StopFly()
     FlyEnabled = false
     if FlyConnection then
@@ -785,10 +796,10 @@ local function StopFly()
     end
     local R = Root()
     if R then
-        local Velocity = R:FindFirstChild("BananiFlyVelocity")
-        local Gyro = R:FindFirstChild("BananiFlyGyro")
-        if Velocity then Velocity:Destroy() end
-        if Gyro then Gyro:Destroy() end
+        for _, Name in ipairs(FlyMoverNames) do
+            local Existing = R:FindFirstChild(Name)
+            if Existing then Existing:Destroy() end
+        end
         -- Zero leftover momentum so toggling off stops you instantly
         -- instead of coasting (which looked like fly never turned off).
         R.AssemblyLinearVelocity = Vector3.zero
@@ -803,22 +814,61 @@ local function StartFly()
         return
     end
     FlyEnabled = true
-    local Velocity = Instance.new("BodyVelocity")
-    Velocity.Name = "BananiFlyVelocity"
-    Velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-    Velocity.Velocity = Vector3.zero
-    Velocity.Parent = R
-    local Gyro = Instance.new("BodyGyro")
-    Gyro.Name = "BananiFlyGyro"
-    Gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    Gyro.P = 90000
-    Gyro.D = 500
-    Gyro.Parent = R
-    FlyConnection = RunService.RenderStepped:Connect(function()
-        if not FlyEnabled or not R.Parent or not Velocity.Parent then
-            StopFly()
-            return
+
+    -- Prefer constraint movers. They integrate with the physics solver instead
+    -- of overriding it every frame, so there's no fight and no visible jitter.
+    local Linear, Align, Legacy
+    local Built = pcall(function()
+        local Attachment = Instance.new("Attachment")
+        Attachment.Name = "BananiFlyAttach"
+        Attachment.Parent = R
+
+        Linear = Instance.new("LinearVelocity")
+        Linear.Name = "BananiFlyLinear"
+        Linear.Attachment0 = Attachment
+        Linear.RelativeTo = Enum.ActuatorRelativeTo.World
+        Linear.MaxForce = math.huge
+        Linear.VectorVelocity = Vector3.zero
+        Linear.Parent = R
+
+        Align = Instance.new("AlignOrientation")
+        Align.Name = "BananiFlyAlign"
+        Align.Attachment0 = Attachment
+        Align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+        Align.AlignType = Enum.AlignType.AllAxes
+        Align.Responsiveness = 40
+        Align.MaxTorque = math.huge
+        Align.RigidityEnabled = false
+        Align.Parent = R
+    end)
+
+    if not Built then
+        -- Older client without constraint movers: fall back to the legacy pair.
+        for _, Name in ipairs(FlyMoverNames) do
+            local Existing = R:FindFirstChild(Name)
+            if Existing then Existing:Destroy() end
         end
+        Linear = nil
+        Legacy = Instance.new("BodyVelocity")
+        Legacy.Name = "BananiFlyVelocity"
+        Legacy.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        Legacy.Velocity = Vector3.zero
+        Legacy.Parent = R
+        local Gyro = Instance.new("BodyGyro")
+        Gyro.Name = "BananiFlyGyro"
+        Gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        Gyro.P = 90000
+        Gyro.D = 500
+        Gyro.Parent = R
+        Align = Gyro
+    end
+
+    local CurrentVelocity = Vector3.zero
+    FlyConnection = RunService.RenderStepped:Connect(function(Delta)
+        if not FlyEnabled or not R.Parent then StopFly() return end
+        if Linear and not Linear.Parent then StopFly() return end
+        if Legacy and not Legacy.Parent then StopFly() return end
+
         local Direction = Vector3.zero
         local CF = Camera.CFrame
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then Direction += CF.LookVector end
@@ -827,9 +877,38 @@ local function StartFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then Direction += CF.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then Direction += Vector3.yAxis end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then Direction -= Vector3.yAxis end
-        if Direction.Magnitude > 0 then Direction = Direction.Unit end
-        Velocity.Velocity = Direction * FlySpeed
-        Gyro.CFrame = CF
+
+        local Target = Direction.Magnitude > 0
+            and (Direction.Unit * FlySpeed)
+            or Vector3.zero
+
+        -- Ramp instead of snapping 0 -> full speed. Frame-rate aware so it
+        -- feels the same at 30fps and 240fps.
+        local Alpha = math.clamp(Delta * FlyResponsiveness, 0, 1)
+        CurrentVelocity = CurrentVelocity:Lerp(Target, Alpha)
+
+        if Linear then
+            Linear.VectorVelocity = CurrentVelocity
+        elseif Legacy then
+            Legacy.Velocity = CurrentVelocity
+        end
+
+        -- Upright keeps the body level and only yaws with the camera, which
+        -- reads as normal movement. Off = old behaviour (pitches with camera).
+        local Facing = CF
+        if FlyUpright then
+            local Flat = Vector3.new(CF.LookVector.X, 0, CF.LookVector.Z)
+            if Flat.Magnitude > 0.01 then
+                Facing = CFrame.lookAt(R.Position, R.Position + Flat.Unit)
+            else
+                Facing = CFrame.new(R.Position) * R.CFrame.Rotation
+            end
+        end
+        if Align and Align:IsA("AlignOrientation") then
+            Align.CFrame = Facing.Rotation
+        elseif Align then
+            Align.CFrame = Facing
+        end
     end)
 end
 --==============================================================
@@ -1026,6 +1105,48 @@ TrackConnection(Player.Idled:Connect(function()
     end
 end))
 --==============================================================
+-- AUTO WALK
+--==============================================================
+local function SetAutoWalk(Value)
+    AutoWalkEnabled = Value == true
+    if AutoWalkConnection then
+        AutoWalkConnection:Disconnect()
+        AutoWalkConnection = nil
+    end
+    if not AutoWalkEnabled then
+        local H = Humanoid()
+        if H then H:Move(Vector3.zero, false) end
+        return
+    end
+    local JumpCooldown = false
+    local RayParams = RaycastParams.new()
+    RayParams.FilterType = Enum.RaycastFilterType.Exclude
+    -- Humanoid:Move drives the same pathing the normal controls use, so the
+    -- walk animation, speed limits, and slope handling all behave normally.
+    AutoWalkConnection = RunService.Heartbeat:Connect(function()
+        if not AutoWalkEnabled or Unloaded then return end
+        local H, R, C = Humanoid(), Root(), Character()
+        if not H or not R or not C or H.Health <= 0 then return end
+        if FreezeEnabled or FlyEnabled then return end
+
+        local Source = (AutoWalkMode == "Character") and R.CFrame or Camera.CFrame
+        local Flat = Vector3.new(Source.LookVector.X, 0, Source.LookVector.Z)
+        if Flat.Magnitude < 0.01 then return end
+        local Direction = Flat.Unit
+        H:Move(Direction, false)
+
+        if AutoWalkJump and not JumpCooldown then
+            RayParams.FilterDescendantsInstances = {C}
+            local Hit = workspace:Raycast(R.Position, Direction * 3, RayParams)
+            if Hit and H.FloorMaterial ~= Enum.Material.Air then
+                JumpCooldown = true
+                H:ChangeState(Enum.HumanoidStateType.Jumping)
+                task.delay(0.35, function() JumpCooldown = false end)
+            end
+        end
+    end)
+end
+--==============================================================
 -- TWEEN TRAVEL (shared by waypoint teleport and the route)
 --==============================================================
 Runtime.TweenSpeed = Runtime.TweenSpeed or 80  -- studs per second
@@ -1050,13 +1171,23 @@ local function TweenRootTo(TargetCFrame)
     end
     Runtime.TweenActive = true
     Runtime.TweenCancel = false
+
     local StartCFrame = R.CFrame
-    local Distance = (TargetCFrame.Position - StartCFrame.Position).Magnitude
+    local Offset = TargetCFrame.Position - StartCFrame.Position
+    local Distance = Offset.Magnitude
     local Duration = math.clamp(Distance / math.max(Runtime.TweenSpeed, 1), 0.05, 120)
+
+    -- Face the direction of travel so the character isn't sliding sideways.
+    local Flat = Vector3.new(Offset.X, 0, Offset.Z)
+    local TravelRotation = Flat.Magnitude > 0.5
+        and CFrame.lookAt(Vector3.zero, Flat.Unit).Rotation
+        or StartCFrame.Rotation
+
     local RestoreNoclip = not NoclipEnabled
     if RestoreNoclip then SetNoclip(true) end
     local WasPlatformStand = H and H.PlatformStand or false
     if H then H.PlatformStand = true end
+
     local Elapsed = 0
     while Elapsed < Duration do
         if Runtime.TweenCancel or Unloaded then break end
@@ -1068,21 +1199,52 @@ local function TweenRootTo(TargetCFrame)
             Enum.EasingStyle.Quad,
             Enum.EasingDirection.InOut
         )
-        CurrentRoot.CFrame = StartCFrame:Lerp(TargetCFrame, Alpha)
+        local Position = StartCFrame.Position:Lerp(TargetCFrame.Position, Alpha)
+        CurrentRoot.CFrame = CFrame.new(Position) * TravelRotation
         CurrentRoot.AssemblyLinearVelocity = Vector3.zero
+        CurrentRoot.AssemblyAngularVelocity = Vector3.zero
     end
+
     local Reached = not Runtime.TweenCancel
     local FinalRoot = Root()
     if FinalRoot and FinalRoot.Parent and Reached then
         FinalRoot.CFrame = TargetCFrame
         FinalRoot.AssemblyLinearVelocity = Vector3.zero
+        FinalRoot.AssemblyAngularVelocity = Vector3.zero
     end
     local FinalHumanoid = Humanoid()
     if FinalHumanoid then FinalHumanoid.PlatformStand = WasPlatformStand end
     if RestoreNoclip then SetNoclip(false) end
+    -- One settle frame so physics resumes cleanly instead of popping.
+    RunService.Heartbeat:Wait()
+
     Runtime.TweenActive = false
     Runtime.TweenCancel = false
     return Reached
+end
+-- Teleport that lands you on the ground instead of inside or above it.
+Runtime.GroundSnapTeleport = Runtime.GroundSnapTeleport ~= false
+local function SafeTeleport(TargetCFrame)
+    local R = Root()
+    if not R or not TargetCFrame then return false end
+    local Goal = TargetCFrame
+    if Runtime.GroundSnapTeleport then
+        local Params = RaycastParams.new()
+        Params.FilterType = Enum.RaycastFilterType.Exclude
+        Params.FilterDescendantsInstances = {Character()}
+        local Hit = workspace:Raycast(
+            TargetCFrame.Position + Vector3.new(0, 8, 0),
+            Vector3.new(0, -50, 0),
+            Params
+        )
+        if Hit then
+            Goal = CFrame.new(Hit.Position + Vector3.new(0, 3.2, 0)) * TargetCFrame.Rotation
+        end
+    end
+    R.CFrame = Goal
+    R.AssemblyLinearVelocity = Vector3.zero
+    R.AssemblyAngularVelocity = Vector3.zero
+    return true
 end
 --==============================================================
 -- LIGHTING / VISUALS
@@ -2112,6 +2274,18 @@ do
     })
     HomeTab:CreateSection("📜 What's New")
     HomeTab:CreateParagraph({
+        Title = "v2.7 • Movement Update",
+        Content =
+            "• Added Auto Walk with Camera or Character direction"
+            .. "\n• Added optional obstacle jumping while auto walking"
+            .. "\n• Rebuilt Fly on constraint movers with a smooth speed ramp"
+            .. "\n• Added Fly Responsiveness and Keep Body Upright options"
+            .. "\n• Tween now faces its travel direction and settles cleanly"
+            .. "\n• Teleports can ground-snap so you land on terrain, not inside it"
+            .. "\n• Route playback: Play Once, Loop Route, Pause / Resume, Stop"
+            .. "\n• Waypoint delay now starts at 0.5 seconds"
+    })
+    HomeTab:CreateParagraph({
         Title = "v2.6 • Interface Refresh",
         Content =
             "• Added a clear Available release-status card to Home"
@@ -2163,6 +2337,15 @@ do
         Name = "Fly Speed", Flag = "Player_FlySpeed", Range = {10, 150}, Increment = 5, CurrentValue = 50,
         Callback = function(Value) FlySpeed = Value end
     })
+    PlayerTab:CreateSlider({
+        Name = "Fly Responsiveness", Flag = "Player_FlyResponsiveness",
+        Range = {4, 30}, Increment = 1, CurrentValue = 12,
+        Callback = function(Value) FlyResponsiveness = Value end
+    })
+    PlayerTab:CreateToggle({
+        Name = "🧍 Keep Body Upright", Flag = "Player_FlyUpright", CurrentValue = true,
+        Callback = function(Value) FlyUpright = Value end
+    })
     PlayerTab:CreateToggle({
         Name = "🚧 Noclip", Flag = "Player_Noclip", CurrentValue = false, Callback = SetNoclip
     })
@@ -2196,6 +2379,26 @@ do
         Callback = function(Value) AutoJumpEnabled = Value end
     })
 
+    PlayerTab:CreateSection("🚶 Auto Walk")
+    PlayerTab:CreateParagraph({
+        Title = "Auto Walk",
+        Content = "Walks forward on its own. Camera mode follows where you look; Character mode holds your current facing. Turn on obstacle jumping to hop small ledges automatically."
+    })
+    PlayerTab:CreateToggle({
+        Name = "🚶 Auto Walk", Flag = "Player_AutoWalk", CurrentValue = false,
+        Callback = SetAutoWalk
+    })
+    PlayerTab:CreateDropdown({
+        Name = "Walk Direction", Options = {"Camera", "Character"},
+        CurrentOption = {"Camera"}, Flag = "Player_AutoWalkMode",
+        Callback = function(Option)
+            AutoWalkMode = type(Option) == "table" and Option[1] or Option
+        end
+    })
+    PlayerTab:CreateToggle({
+        Name = "🪜 Auto Jump Obstacles", Flag = "Player_AutoWalkJump", CurrentValue = false,
+        Callback = function(Value) AutoWalkJump = Value end
+    })
     PlayerTab:CreateSection("🛡️ Protection & Session")
     PlayerTab:CreateToggle({
         Name = "🕳️ Anti Void", Flag = "Player_AntiVoid", CurrentValue = false, Callback = SetAntiVoid
@@ -2398,8 +2601,7 @@ Runtime.StartRoute = function(Loop)
             if Runtime.RouteTravelMode == "Tween" then
                 TweenRootTo(TargetCFrame)
             else
-                R.CFrame = TargetCFrame
-                R.AssemblyLinearVelocity = Vector3.zero
+                SafeTeleport(TargetCFrame)
             end
             if not Runtime.RouteRunning or Runtime.RouteRunId ~= ThisRun or Unloaded then break end
             local Waited = 0
@@ -2455,9 +2657,8 @@ do
         Callback = function()
             local Target = SelectedPlayer and FindPlayerByDisplayName(SelectedPlayer)
             local TargetRoot = Target and Target.Character and Target.Character:FindFirstChild("HumanoidRootPart")
-            local R = Root()
-            if R and TargetRoot then
-                R.CFrame = TargetRoot.CFrame + Vector3.new(0, 3, 0)
+            if TargetRoot then
+                SafeTeleport(TargetRoot.CFrame * CFrame.new(0, 0, 3))
             else
                 Notify("Teleport", "The selected player or character is unavailable.")
             end
@@ -2516,14 +2717,16 @@ do
         Name = "⚡ Travel To Waypoint",
         Callback = function()
             local CF = SelectedWaypoint and DecodeCFrame(Waypoints[SelectedWaypoint])
-            local R = Root()
-            if R and CF then
-                R.CFrame = CF
-                R.AssemblyLinearVelocity = Vector3.zero
+            if CF then
+                SafeTeleport(CF)
             else
                 Notify("Waypoint", "Select a valid saved waypoint first.")
             end
         end
+    })
+    TeleportTab:CreateToggle({
+        Name = "🧲 Ground Snap On Teleport", Flag = "Travel_GroundSnap", CurrentValue = true,
+        Callback = function(Value) Runtime.GroundSnapTeleport = Value end
     })
     TeleportTab:CreateButton({
         Name = "🎯 Smooth Travel To Waypoint",
@@ -3088,7 +3291,9 @@ do
         Content = "Select a feature to see what it does and which category contains it."
     })
     local HelpTopics = {
-        ["Fly"] = "Enable Fly in Player > Flight & Collision. WASD to move, Space up, Left Control down. Toggling off zeroes your velocity so you stop instantly.",
+        ["Fly"] = "Enable Fly in Player > Flight & Collision. WASD to move, Space up, Left Control down. Responsiveness controls how fast it reaches full speed, and Keep Body Upright stops your character pitching with the camera. Toggling off zeroes your velocity so you stop instantly.",
+        ["Auto Walk"] = "Player > Auto Walk. Walks forward on its own. Camera mode steers with where you look; Character mode holds your current facing. Auto Jump Obstacles hops small ledges. It pauses itself while Fly or Freeze is on.",
+        ["Ground Snap"] = "Travel > Ground Snap On Teleport. Raycasts down at your destination and places you on the surface instead of inside geometry or hanging in the air.",
         ["Noclip"] = "Noclip lets your character pass through collidable parts while enabled.",
         ["Spider Climb"] = "Face a wall and hold W to climb upward.",
         ["Saved Waypoints"] = "Open Travel > Saved Waypoints. Name a spot, save it, then Teleport or Tween to any saved waypoint.",
@@ -3099,7 +3304,7 @@ do
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
         ["Performance Mode"] = "Visuals > Performance. Disables particles, post-processing, shadows, and complex materials. Turning it off restores visuals."
     }
-    local Order = {"Fly", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Freecam", "Box ESP", "Health ESP", "Performance Mode"}
+    local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "Performance Mode"}
     HelpTab:CreateDropdown({
         Name = "Select a Feature", Options = Order, CurrentOption = {"Route Builder"}, SearchBarEnabled = true,
         Callback = function(Option)
@@ -3127,6 +3332,7 @@ local function MasterReset()
     pcall(function() SetAntiVoid(false) end)
     pcall(function() SetAntiRagdoll(false) end)
     pcall(function() SetSpiderClimb(false) end)
+    pcall(function() SetAutoWalk(false) end)
     pcall(function() SetNoclip(false) end)
     BoxESPEnabled = false
     HealthESPEnabled = false
@@ -3177,6 +3383,7 @@ local function UnloadBananiHub()
     pcall(function() SetAntiVoid(false) end)
     pcall(function() SetAntiRagdoll(false) end)
     pcall(function() SetSpiderClimb(false) end)
+    pcall(function() SetAutoWalk(false) end)
     BoxESPEnabled = false
     HealthESPEnabled = false
     pcall(SetPlayerESP)
@@ -3200,7 +3407,7 @@ local function UnloadBananiHub()
         FreecamMouseConnection, FreecamEndConnection, FreecamChangedConnection,
         CameraShakeConnection, SpectatorConnection, ServerStatusConnection,
         StatsStatusConnection, AntiVoidConnection, AntiRagdollConnection,
-        SpiderClimbConnection, ESPConnection
+        SpiderClimbConnection, AutoWalkConnection, ESPConnection
     }
     for _, Connection in ipairs(Connections) do
         if Connection then pcall(function() Connection:Disconnect() end) end
@@ -3479,6 +3686,7 @@ TrackConnection(Player.CharacterAdded:Connect(function(NewCharacter)
         end
         if NoclipEnabled then SetNoclip(true) end
         if FlyEnabled then StartFly() end
+        if AutoWalkEnabled then SetAutoWalk(true) end
         if FreecamEnabled or Spectating then SetCharacterLocked(true) end
     end)
 end))
