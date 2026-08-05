@@ -156,6 +156,7 @@ local AntiVoidConnection
 local AntiRagdollConnection
 local SpiderClimbConnection
 local AutoWalkConnection
+local AutoWalkToggleHandle
 local ESPConnection
 local Unloaded = false
 local Runtime = {
@@ -1145,6 +1146,19 @@ local function SetAutoWalk(Value)
             end
         end
     end)
+end
+-- Used by the Auto Walk button so the button and the toggle switch always
+-- report the same state no matter which one you press.
+Runtime.ToggleAutoWalk = function()
+    local NewValue = not AutoWalkEnabled
+    if AutoWalkToggleHandle then
+        pcall(function() AutoWalkToggleHandle:Set(NewValue) end)
+    end
+    -- If the library's Set() didn't run the toggle callback, apply it here.
+    if AutoWalkEnabled ~= NewValue then
+        SetAutoWalk(NewValue)
+    end
+    Notify("Auto Walk", AutoWalkEnabled and "Walking." or "Stopped.")
 end
 --==============================================================
 -- TWEEN TRAVEL (shared by waypoint teleport and the route)
@@ -2277,6 +2291,7 @@ do
         Title = "v2.7 • Movement Update",
         Content =
             "• Added Auto Walk with Camera or Character direction"
+            .. "\n• Added a Start / Stop Auto Walk button"
             .. "\n• Added optional obstacle jumping while auto walking"
             .. "\n• Rebuilt Fly on constraint movers with a smooth speed ramp"
             .. "\n• Added Fly Responsiveness and Keep Body Upright options"
@@ -2382,9 +2397,13 @@ do
     PlayerTab:CreateSection("🚶 Auto Walk")
     PlayerTab:CreateParagraph({
         Title = "Auto Walk",
-        Content = "Walks forward on its own. Camera mode follows where you look; Character mode holds your current facing. Turn on obstacle jumping to hop small ledges automatically."
+        Content = "Walks forward on its own. Use the button or the toggle to start and stop it. Camera mode follows where you look; Character mode holds your current facing. Turn on obstacle jumping to hop small ledges automatically."
     })
-    PlayerTab:CreateToggle({
+    PlayerTab:CreateButton({
+        Name = "▶ Start / Stop Auto Walk",
+        Callback = function() Runtime.ToggleAutoWalk() end
+    })
+    AutoWalkToggleHandle = PlayerTab:CreateToggle({
         Name = "🚶 Auto Walk", Flag = "Player_AutoWalk", CurrentValue = false,
         Callback = SetAutoWalk
     })
@@ -3292,7 +3311,7 @@ do
     })
     local HelpTopics = {
         ["Fly"] = "Enable Fly in Player > Flight & Collision. WASD to move, Space up, Left Control down. Responsiveness controls how fast it reaches full speed, and Keep Body Upright stops your character pitching with the camera. Toggling off zeroes your velocity so you stop instantly.",
-        ["Auto Walk"] = "Player > Auto Walk. Walks forward on its own. Camera mode steers with where you look; Character mode holds your current facing. Auto Jump Obstacles hops small ledges. It pauses itself while Fly or Freeze is on.",
+        ["Auto Walk"] = "Player > Auto Walk. Walks forward on its own. Use the Start / Stop button or the toggle — both stay in sync. Camera mode steers with where you look; Character mode holds your current facing. Auto Jump Obstacles hops small ledges. It pauses itself while Fly or Freeze is on.",
         ["Ground Snap"] = "Travel > Ground Snap On Teleport. Raycasts down at your destination and places you on the surface instead of inside geometry or hanging in the air.",
         ["Noclip"] = "Noclip lets your character pass through collidable parts while enabled.",
         ["Spider Climb"] = "Face a wall and hold W to climb upward.",
