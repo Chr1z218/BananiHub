@@ -1,5 +1,5 @@
 -- ==========================================================
--- 🍌 BANANIHUB v2.6 • INTERFACE REFRESH 🍌
+-- 🍌 BANANIHUB v2.8 • UI VISUALS 🍌
 -- Release status: Available
 -- L = Open / Close
 -- ==========================================================
@@ -32,8 +32,24 @@ local PlaceInfo = {
     Creator = "Loading...",
     IconImageAssetId = 0
 }
-local BANANIHUB_VERSION = "2.7"
+local BANANIHUB_VERSION = "2.8"
 local UIToggleKey = Enum.KeyCode.L
+--==============================================================
+-- HUB GUI TRACKER
+-- UI Visuals must never scan BananiHub's own interface. Most executors
+-- park Rayfield in CoreGui / gethui(), but some force it into PlayerGui.
+-- Snapshot PlayerGui BEFORE the library loads; anything Rayfield-shaped
+-- that appears afterwards is ours and gets excluded from every scan.
+--==============================================================
+local HubGuiTracker = { Existing = {}, Owned = {} }
+do
+    local StartGui = Player:FindFirstChildOfClass("PlayerGui")
+    if StartGui then
+        for _, Child in ipairs(StartGui:GetChildren()) do
+            HubGuiTracker.Existing[Child] = true
+        end
+    end
+end
 --==============================================================
 -- RAYFIELD
 --==============================================================
@@ -95,6 +111,23 @@ local Window = Rayfield:CreateWindow({
 task.defer(function()
     if Window and Window.ModifyTheme then
         Window.ModifyTheme(DEFAULT_GRAY_THEME)
+    end
+end)
+-- Record which PlayerGui ScreenGuis belong to BananiHub (see HUB GUI TRACKER).
+task.defer(function()
+    local CurrentGui = Player:FindFirstChildOfClass("PlayerGui")
+    if not CurrentGui then return end
+    for _, Child in ipairs(CurrentGui:GetChildren()) do
+        if not HubGuiTracker.Existing[Child] then
+            local LowerName = string.lower(Child.Name)
+            -- Only claim it if it actually looks like the hub, so a game GUI
+            -- that happens to spawn during load is not silently excluded.
+            if string.find(LowerName, "rayfield", 1, true)
+                or string.find(LowerName, "banani", 1, true)
+                or Child:FindFirstChild("Main") then
+                HubGuiTracker.Owned[Child] = true
+            end
+        end
     end
 end)
 --==============================================================
@@ -203,6 +236,7 @@ local Runtime = {
         "NPC Highlights",
         "Box ESP",
         "Health ESP",
+        "UI Visuals",
         "Freecam",
         "Spectator",
         "Stats",
@@ -280,9 +314,9 @@ local HelpInformation
 local StatsPlayerDropdown
 local SelectedStatsPlayer = Player
 local ChamsSettingsCreated = false
-local CustomThemeName = "Banana"
-local SelectedThemeFile = nil
-local ThemeFileDropdown
+-- NOTE: CustomThemeName / SelectedThemeFile / ThemeFileDropdown used to be
+-- declared here but were never read anywhere. Removed: this file sits close
+-- to Luau's 200-local-per-scope limit and dead locals cost real registers.
 local CustomTheme = {
     TextColor = Color3.fromRGB(255, 248, 214),
     Background = Color3.fromRGB(28, 24, 12),
@@ -348,6 +382,10 @@ local function RefreshExperienceParagraphs()
                 Content = Details
             })
         end)
+    end
+    -- Keep the UI Visuals game card in sync once the real place name arrives.
+    if Runtime.UIVisuals and Runtime.UIVisuals.UpdateGameInfo then
+        pcall(Runtime.UIVisuals.UpdateGameInfo)
     end
 end
 task.spawn(function()
@@ -526,6 +564,7 @@ end
 local function InferLogFeature(Message)
     local Text = string.lower(tostring(Message or ""))
     for _, Feature in ipairs({
+        "UI Visuals",
         "Freecam",
         "Spectator",
         "Stats",
@@ -2089,6 +2128,811 @@ local function SetPlayerESP()
     end)
 end
 --==============================================================
+-- UI VISUALS
+-- A client-side editor for the text shown in your own PlayerGui.
+--
+-- SCOPE: this only ever writes to the .Text property of GuiObjects that
+-- already exist in the LOCAL player's PlayerGui. It never touches
+-- leaderstats, never fires a RemoteEvent, never writes to the server, and
+-- never persists anything to the game. Nothing here changes what any other
+-- player or the server sees - it is a change to your screen and nothing else.
+--
+-- Everything lives inside this do...end block on purpose: this file is close
+-- to Luau's 200-locals-per-scope ceiling, so the module's internals are
+-- scoped here and only the public API is published on Runtime.UIVisuals.
+--==============================================================
+do
+    local UIVisuals = {
+        Entries = {},        -- every text object found by the last scan
+        EntryByKey = {},     -- Key -> entry
+        LabelToKey = {},     -- dropdown label -> Key
+        Filtered = {},       -- entries currently offered in the dropdown
+        Edits = {},          -- Key -> edit record (only live edits)
+        EditCount = 0,
+        Connections = {},    -- every RBXScriptConnection this module owns
+        SelectedKey = nil,
+        SearchText = "",
+        PendingText = "",
+        KeepApplied = false,
+        IncludeHidden = false,
+        Scanning = false,
+        LastScanCount = 0,
+        LastScanSeconds = 0,
+        MaxOptions = 150,    -- dropdown cap; Search filters the FULL list
+        Placeholder = "Press Scan / Refresh UI",
+        -- UI handles, assigned by the Visuals tab further down.
+        Dropdown = nil,
+        GameParagraph = nil,
+        InfoParagraph = nil
+    }
+    Runtime.UIVisuals = UIVisuals
+
+    -- Words that usually mark a currency / stat label. These only affect
+    -- SORT ORDER so the interesting labels float to the top - every text
+    -- object in PlayerGui stays editable regardless of its name.
+    local StatKeywords = {
+        "cash", "money", "coin", "coins", "gem", "gems", "level", "lvl",
+        "xp", "experience", "win", "wins", "kill", "kills", "score", "rank",
+        "point", "points", "credit", "credits", "token", "tokens", "gold",
+        "balance", "health", "currency", "stat", "stats", "bank", "wallet",
+        "diamond", "diamonds", "star", "stars", "trophy", "trophies", "cost",
+        "price", "amount", "total", "count", "value"
+    }
+    local CurrencySymbols = {"$", "€", "£", "¥", "₽", "R$"}
+
+    ----------------------------------------------------------------
+    -- Small utilities
+    ----------------------------------------------------------------
+    local function GetPlayerGui()
+        local Success, Gui = pcall(function()
+            return Player:FindFirstChildOfClass("PlayerGui")
+        end)
+        if Success then return Gui end
+        return nil
+    end
+
+    local function IsTextObject(Object)
+        return Object:IsA("TextLabel")
+            or Object:IsA("TextButton")
+            or Object:IsA("TextBox")
+    end
+
+    -- True when the object belongs to BananiHub's own interface. Two layers:
+    -- the ScreenGuis we claimed at load time, plus a name check for anything
+    -- the hub or its library recreates later.
+    local function IsHubOwned(Object)
+        local Current = Object
+        local Depth = 0
+        while Current and Depth < 40 do
+            if HubGuiTracker.Owned[Current] then return true end
+            if Current:IsA("LayerCollector") then
+                local LowerName = string.lower(Current.Name)
+                if string.find(LowerName, "rayfield", 1, true)
+                    or string.find(LowerName, "banani", 1, true) then
+                    return true
+                end
+                return false
+            end
+            Current = Current.Parent
+            Depth += 1
+        end
+        return false
+    end
+
+    -- Memoised visibility walk. Cache is per-scan so it never goes stale.
+    local function IsShown(Object, Cache, Gui)
+        if not Object or Object == Gui then return true end
+        local Cached = Cache[Object]
+        if Cached ~= nil then return Cached end
+        local Result
+        if Object:IsA("LayerCollector") then
+            Result = Object.Enabled ~= false
+        elseif Object:IsA("GuiObject") then
+            Result = Object.Visible ~= false
+                and IsShown(Object.Parent, Cache, Gui)
+        else
+            Result = IsShown(Object.Parent, Cache, Gui)
+        end
+        Cache[Object] = Result
+        return Result
+    end
+
+    -- Path relative to PlayerGui, e.g. {"HUD","Top","CashLabel"}.
+    local function GetPathParts(Object, Gui)
+        local Parts = {}
+        local Current = Object
+        local Depth = 0
+        while Current and Current ~= Gui and Depth < 40 do
+            table.insert(Parts, 1, Current.Name)
+            Current = Current.Parent
+            Depth += 1
+        end
+        if Current ~= Gui then return nil end
+        return Parts
+    end
+
+    local function PathString(Parts)
+        return "PlayerGui." .. table.concat(Parts, ".")
+    end
+
+    -- Walk a stored path back down from PlayerGui. Used to find a label the
+    -- game destroyed and rebuilt in the same place.
+    local function ResolveParts(Gui, Parts, ClassName)
+        local Current = Gui
+        for _, Name in ipairs(Parts) do
+            local Found
+            local Success = pcall(function()
+                Found = Current:FindFirstChild(Name)
+            end)
+            if not Success or not Found then return nil end
+            Current = Found
+        end
+        if ClassName and Current.ClassName ~= ClassName then return nil end
+        return Current
+    end
+
+    local function Trim(Text, Limit)
+        Text = tostring(Text or "")
+        Text = (Text:gsub("[\r\n\t]", " "))
+        if #Text > Limit then
+            Text = string.sub(Text, 1, Limit) .. "..."
+        end
+        return Text
+    end
+
+    -- Currency/stat labels rank higher so they land near the top.
+    local function ScoreEntry(Name, Text)
+        local Score = 0
+        local LowerName = string.lower(Name)
+        local LowerText = string.lower(Text)
+        for _, Keyword in ipairs(StatKeywords) do
+            if string.find(LowerName, Keyword, 1, true) then
+                Score += 60
+                break
+            end
+        end
+        for _, Keyword in ipairs(StatKeywords) do
+            if string.find(LowerText, Keyword, 1, true) then
+                Score += 25
+                break
+            end
+        end
+        if string.find(Text, "%d") then Score += 15 end
+        -- Currency symbols are checked as plain substrings. €/£ are multi-byte
+        -- UTF-8, so putting them in a Lua character class only escapes their
+        -- first byte and matches garbage.
+        for _, Symbol in ipairs(CurrencySymbols) do
+            if string.find(Text, Symbol, 1, true) then
+                Score += 20
+                break
+            end
+        end
+        -- "1,234", "  99 ", "5000 Coins": mostly-a-number labels.
+        if string.find(Text, "^%s*[%d%.,]+%s*%a*%s*$") then Score += 20 end
+        if string.find(LowerText, "%d%s*[kmb]$") then Score += 10 end
+        return Score
+    end
+
+    ----------------------------------------------------------------
+    -- Edit records
+    ----------------------------------------------------------------
+    -- Writes go through here so the Text listener can tell OUR write apart
+    -- from the game's write and not treat it as a new "real" value.
+    local function WriteText(Record, Value)
+        local Object = Record.Object
+        if not Object then return false end
+        Record.Applying = true
+        local Success = pcall(function()
+            Object.Text = Value
+        end)
+        Record.Applying = false
+        return Success
+    end
+
+    local function DetachSignals(Record)
+        for _, Field in ipairs({"TextConnection", "AncestryConnection"}) do
+            local Connection = Record[Field]
+            if Connection then
+                pcall(function() Connection:Disconnect() end)
+                Record[Field] = nil
+            end
+        end
+    end
+
+    -- Bind a record to a live object. Safe to call again after the game
+    -- recreates the label; old connections are dropped first, so rescanning
+    -- can never stack duplicate listeners on the same record.
+    local function AttachRecord(Record, Object)
+        DetachSignals(Record)
+        Record.Object = Object
+        if not Object then return end
+
+        local ReadOk, CurrentText = pcall(function() return Object.Text end)
+        if ReadOk and CurrentText ~= Record.CustomText then
+            Record.RealText = CurrentText
+        end
+
+        -- One property listener per EDITED object. Not per scanned object,
+        -- and no RenderStepped loop anywhere in this module.
+        local TextOk, TextConnection = pcall(function()
+            return Object:GetPropertyChangedSignal("Text"):Connect(function()
+                if Record.Applying or Unloaded then return end
+                local Ok, Value = pcall(function() return Object.Text end)
+                if not Ok then return end
+                if Value == Record.CustomText then return end
+                -- The game just wrote a fresh legitimate value. Remember it
+                -- so Reset restores THIS, not a value from ten minutes ago.
+                Record.RealText = Value
+                if UIVisuals.KeepApplied and Record.Active then
+                    WriteText(Record, Record.CustomText)
+                end
+            end)
+        end)
+        if TextOk then Record.TextConnection = TextConnection end
+
+        local AncestryOk, AncestryConnection = pcall(function()
+            return Object.AncestryChanged:Connect(function(_, NewParent)
+                if not NewParent and Record.Object == Object then
+                    -- Destroyed or unparented. The maintenance pass and the
+                    -- DescendantAdded watcher will look for its replacement.
+                    Record.Object = nil
+                end
+            end)
+        end)
+        if AncestryOk then Record.AncestryConnection = AncestryConnection end
+
+        if Record.Active then
+            WriteText(Record, Record.CustomText)
+        end
+    end
+
+    -- Find the replacement for a record whose object went away.
+    local function Relocate(Record)
+        local Gui = GetPlayerGui()
+        if not Gui then return nil end
+        -- 1. Exact same path, same class. This covers the common case of a
+        --    game destroying and rebuilding its own currency label.
+        local Exact = ResolveParts(Gui, Record.Parts, Record.ClassName)
+        if Exact and IsTextObject(Exact) and not IsHubOwned(Exact) then
+            return Exact
+        end
+        -- 2. Fall back to a unique Name + ClassName + parent-name match.
+        --    Only accepted when exactly ONE candidate exists, so we can never
+        --    silently hijack an unrelated label that happens to share a name.
+        local Match, MatchCount = nil, 0
+        local Success = pcall(function()
+            for _, Object in ipairs(Gui:GetDescendants()) do
+                if Object.Name == Record.Name
+                    and Object.ClassName == Record.ClassName
+                    and IsTextObject(Object)
+                    and not IsHubOwned(Object) then
+                    local Parent = Object.Parent
+                    if Parent and Parent.Name == Record.ParentName then
+                        MatchCount += 1
+                        Match = Object
+                        if MatchCount > 1 then break end
+                    end
+                end
+            end
+        end)
+        if Success and MatchCount == 1 then return Match end
+        return nil
+    end
+
+    local function RemoveRecord(Record, Restore)
+        if Restore then
+            local Object = Record.Object
+            if Object then
+                Record.Applying = true
+                pcall(function() Object.Text = Record.RealText end)
+                Record.Applying = false
+            end
+        end
+        DetachSignals(Record)
+        Record.Active = false
+        if UIVisuals.Edits[Record.Key] == Record then
+            UIVisuals.Edits[Record.Key] = nil
+            UIVisuals.EditCount = math.max(UIVisuals.EditCount - 1, 0)
+        end
+    end
+
+    ----------------------------------------------------------------
+    -- Managed update system
+    -- ONE PlayerGui listener + ONE throttled Heartbeat pass, shared by every
+    -- edit. Adding a hundred edits adds zero new loops.
+    ----------------------------------------------------------------
+    local function TryReattach(Object)
+        if Unloaded or UIVisuals.EditCount == 0 then return end
+        if not Object or not Object.Parent then return end
+        local Gui = GetPlayerGui()
+        if not Gui then return end
+        if IsHubOwned(Object) then return end
+        local Parts = GetPathParts(Object, Gui)
+        if not Parts then return end
+        local Key = PathString(Parts) .. "|" .. Object.ClassName
+        local Record = UIVisuals.Edits[Key]
+        if Record and Record.Active and Record.Object ~= Object then
+            AttachRecord(Record, Object)
+        end
+    end
+
+    local function EnsureConnections()
+        local Gui = GetPlayerGui()
+        if not Gui then return false end
+
+        if not UIVisuals.Connections.DescendantAdded then
+            UIVisuals.Connections.DescendantAdded =
+                Gui.DescendantAdded:Connect(function(Object)
+                    if Unloaded or UIVisuals.EditCount == 0 then return end
+                    local Ok, IsText = pcall(IsTextObject, Object)
+                    if not Ok or not IsText then return end
+                    -- Deferred: at DescendantAdded time the parent chain is
+                    -- set, but properties are often still being filled in.
+                    task.defer(TryReattach, Object)
+                end)
+        end
+
+        if not UIVisuals.Connections.Maintenance then
+            local Accumulator = 0
+            UIVisuals.Connections.Maintenance =
+                RunService.Heartbeat:Connect(function(Delta)
+                    if Unloaded or UIVisuals.EditCount == 0 then
+                        Accumulator = 0
+                        return
+                    end
+                    Accumulator += Delta
+                    if Accumulator < 0.5 then return end
+                    Accumulator = 0
+                    for _, Record in pairs(UIVisuals.Edits) do
+                        if Record.Active then
+                            local Object = Record.Object
+                            local Alive = false
+                            if Object then
+                                local Ok, Parent = pcall(function()
+                                    return Object.Parent
+                                end)
+                                Alive = Ok and Parent ~= nil
+                            end
+                            if not Alive then
+                                Record.Object = nil
+                                local Replacement = Relocate(Record)
+                                if Replacement then
+                                    AttachRecord(Record, Replacement)
+                                end
+                            elseif UIVisuals.KeepApplied then
+                                local Ok, Value = pcall(function()
+                                    return Object.Text
+                                end)
+                                if Ok and Value ~= Record.CustomText then
+                                    Record.RealText = Value
+                                    WriteText(Record, Record.CustomText)
+                                end
+                            end
+                        end
+                    end
+                end)
+        end
+        return true
+    end
+
+    ----------------------------------------------------------------
+    -- Dropdown / paragraph refreshing
+    ----------------------------------------------------------------
+    function UIVisuals.UpdateGameInfo()
+        if not UIVisuals.GameParagraph then return end
+        pcall(function()
+            UIVisuals.GameParagraph:Set({
+                Title = "🎮 Game Information",
+                Content =
+                    "Game: " .. tostring(PlaceInfo.Name)
+                    .. "\nPlaceId: " .. tostring(game.PlaceId)
+                    .. "\nDetected UI Text Elements: " .. tostring(UIVisuals.LastScanCount)
+                    .. "\nShown In Dropdown: " .. tostring(#UIVisuals.Filtered)
+                    .. "\nActive UI Edits: " .. tostring(UIVisuals.EditCount)
+                    .. "\nLast Scan: "
+                    .. (UIVisuals.LastScanSeconds > 0
+                        and (string.format("%.2f", UIVisuals.LastScanSeconds) .. "s")
+                        or "never")
+            })
+        end)
+    end
+
+    function UIVisuals.UpdateSelectionInfo()
+        if not UIVisuals.InfoParagraph then return end
+        local Entry = UIVisuals.SelectedKey
+            and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
+        if not Entry then
+            pcall(function()
+                UIVisuals.InfoParagraph:Set({
+                    Title = "🎯 Selected UI",
+                    Content = "Nothing selected. Scan, then pick something from Select UI Text."
+                })
+            end)
+            return
+        end
+        local Record = UIVisuals.Edits[Entry.Key]
+        local Object = (Record and Record.Object) or Entry.Object
+        local LiveText = "(object missing)"
+        if Object then
+            local Ok, Value = pcall(function() return Object.Text end)
+            if Ok then LiveText = Value end
+        end
+        local RealText = Record and Record.RealText or Entry.Text
+        pcall(function()
+            UIVisuals.InfoParagraph:Set({
+                Title = "🎯 " .. Entry.Name,
+                Content =
+                    "Object: " .. Entry.Name
+                    .. "\nClass: " .. Entry.ClassName
+                    .. "\nCurrent Text: " .. Trim(LiveText, 60)
+                    .. "\nOriginal / Real Text: " .. Trim(RealText, 60)
+                    .. "\nUI Path: " .. Trim(Entry.Path, 140)
+                    .. "\nStatus: "
+                    .. (Record and Record.Active
+                        and ("edited -> " .. Trim(Record.CustomText, 40))
+                        or "not edited")
+            })
+        end)
+    end
+
+    -- Rebuild the dropdown from the filtered list. Rayfield chokes on an
+    -- empty Options table, so an empty result always shows the placeholder.
+    function UIVisuals.RefreshDropdown()
+        local Options = {}
+        UIVisuals.LabelToKey = {}
+        local Shown = 0
+        for _, Entry in ipairs(UIVisuals.Filtered) do
+            if Shown >= UIVisuals.MaxOptions then break end
+            table.insert(Options, Entry.Label)
+            UIVisuals.LabelToKey[Entry.Label] = Entry.Key
+            Shown += 1
+        end
+        if #Options == 0 then
+            Options = {UIVisuals.Placeholder}
+        end
+        if UIVisuals.Dropdown then
+            pcall(function()
+                UIVisuals.Dropdown:Refresh(Options)
+            end)
+            -- Keep the current pick selected across a refresh when it survived.
+            local Entry = UIVisuals.SelectedKey
+                and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
+            if Entry and UIVisuals.LabelToKey[Entry.Label] then
+                pcall(function()
+                    UIVisuals.Dropdown:Set({Entry.Label})
+                end)
+            end
+        end
+        UIVisuals.UpdateGameInfo()
+    end
+
+    -- Search filters the FULL detected list, not just what the dropdown shows.
+    function UIVisuals.ApplyFilter()
+        local Query = string.lower(UIVisuals.SearchText or "")
+        local Result = {}
+        if Query == "" then
+            Result = table.clone(UIVisuals.Entries)
+        else
+            for _, Entry in ipairs(UIVisuals.Entries) do
+                if string.find(Entry.SearchBlob, Query, 1, true) then
+                    table.insert(Result, Entry)
+                end
+            end
+        end
+        UIVisuals.Filtered = Result
+        UIVisuals.RefreshDropdown()
+    end
+
+    function UIVisuals.SetSearch(Text)
+        UIVisuals.SearchText = tostring(Text or "")
+        UIVisuals.ApplyFilter()
+    end
+
+    ----------------------------------------------------------------
+    -- Scanner
+    ----------------------------------------------------------------
+    function UIVisuals.Scan()
+        if UIVisuals.Scanning then
+            Notify("UI Visuals", "A scan is already running.")
+            return
+        end
+        local Gui = GetPlayerGui()
+        if not Gui then
+            Notify("UI Visuals", "PlayerGui is not available yet.")
+            LogWarning("UI Visuals scan failed: no PlayerGui", "UI Visuals")
+            return
+        end
+        UIVisuals.Scanning = true
+        EnsureConnections()
+
+        local StartClock = os.clock()
+        local Entries = {}
+        local EntryByKey = {}
+        local VisibilityCache = {}
+
+        local Success, ErrorMessage = pcall(function()
+            local Descendants = Gui:GetDescendants()
+            for Index, Object in ipairs(Descendants) do
+                if Unloaded then break end
+                if IsTextObject(Object) and not IsHubOwned(Object) then
+                    local Text = Object.Text
+                    local Shown = UIVisuals.IncludeHidden
+                        or (Text ~= "" and IsShown(Object, VisibilityCache, Gui))
+                    if Shown then
+                        local Parts = GetPathParts(Object, Gui)
+                        if Parts then
+                            local Path = PathString(Parts)
+                            local Key = Path .. "|" .. Object.ClassName
+                            -- Roblox allows sibling name collisions, so a path
+                            -- is not guaranteed unique. Suffix duplicates.
+                            if EntryByKey[Key] then
+                                local Suffix = 2
+                                while EntryByKey[Key .. "#" .. Suffix] do
+                                    Suffix += 1
+                                end
+                                Key = Key .. "#" .. Suffix
+                            end
+                            local ParentName = Object.Parent and Object.Parent.Name or ""
+                            local Entry = {
+                                Object = Object,
+                                Key = Key,
+                                Name = Object.Name,
+                                ClassName = Object.ClassName,
+                                Text = Text,
+                                Path = Path,
+                                Parts = Parts,
+                                ParentName = ParentName,
+                                Score = ScoreEntry(Object.Name, Text)
+                            }
+                            Entry.SearchBlob = string.lower(
+                                Object.Name .. " " .. Text .. " " .. Path
+                            )
+                            table.insert(Entries, Entry)
+                            EntryByKey[Key] = Entry
+                        end
+                    end
+                end
+                -- Yield periodically so a GUI with thousands of objects never
+                -- stalls the frame.
+                if Index % 400 == 0 then task.wait() end
+            end
+        end)
+
+        if not Success then
+            UIVisuals.Scanning = false
+            LogError("UI Visuals scan failed: " .. tostring(ErrorMessage), "UI Visuals")
+            Notify("UI Visuals", "Scan failed. Check the executor output.")
+            return
+        end
+
+        -- Currency/stat-looking labels first, then alphabetical.
+        table.sort(Entries, function(A, B)
+            if A.Score ~= B.Score then return A.Score > B.Score end
+            if A.Name ~= B.Name then return string.lower(A.Name) < string.lower(B.Name) end
+            return A.Path < B.Path
+        end)
+
+        -- Build display labels, disambiguating collisions with the path tail
+        -- so two "Amount" labels are still telling apart.
+        local UsedLabels = {}
+        for _, Entry in ipairs(Entries) do
+            local Base = Entry.Name .. ' | "' .. Trim(Entry.Text, 26) .. '"'
+            local Label = Base
+            if UsedLabels[Label] then
+                local Depth = #Entry.Parts
+                local Context = Depth >= 3
+                    and (Entry.Parts[Depth - 2] .. "/" .. Entry.Parts[Depth - 1])
+                    or (Entry.ParentName ~= "" and Entry.ParentName or "root")
+                Label = Base .. "  •  " .. Context
+            end
+            if UsedLabels[Label] then
+                local Suffix = 2
+                while UsedLabels[Label .. " #" .. Suffix] do
+                    Suffix += 1
+                end
+                Label = Label .. " #" .. Suffix
+            end
+            UsedLabels[Label] = true
+            Entry.Label = Label
+        end
+
+        UIVisuals.Entries = Entries
+        UIVisuals.EntryByKey = EntryByKey
+        UIVisuals.LastScanCount = #Entries
+        UIVisuals.LastScanSeconds = os.clock() - StartClock
+
+        -- Rebind live edits to the freshly scanned objects. AttachRecord
+        -- disconnects first, so rescanning never doubles up connections.
+        for Key, Record in pairs(UIVisuals.Edits) do
+            local Entry = EntryByKey[Key]
+            if Entry then
+                if Record.Object ~= Entry.Object then
+                    AttachRecord(Record, Entry.Object)
+                end
+            elseif not Record.Object then
+                local Replacement = Relocate(Record)
+                if Replacement then AttachRecord(Record, Replacement) end
+            end
+        end
+
+        -- Selection survives a rescan when the same object is still there.
+        if UIVisuals.SelectedKey and not EntryByKey[UIVisuals.SelectedKey] then
+            UIVisuals.SelectedKey = nil
+        end
+
+        UIVisuals.Scanning = false
+        UIVisuals.ApplyFilter()
+        UIVisuals.UpdateSelectionInfo()
+        LogSuccess(
+            "UI Visuals scanned " .. tostring(#Entries) .. " text elements in "
+            .. string.format("%.2f", UIVisuals.LastScanSeconds) .. "s",
+            "UI Visuals"
+        )
+        Notify("UI Visuals", "Found " .. tostring(#Entries) .. " editable text elements.")
+    end
+
+    ----------------------------------------------------------------
+    -- Selection / apply / reset
+    ----------------------------------------------------------------
+    function UIVisuals.SelectLabel(Label)
+        Label = tostring(Label or "")
+        if Label == "" or Label == UIVisuals.Placeholder then return end
+        local Key = UIVisuals.LabelToKey[Label]
+        if not Key then return end
+        UIVisuals.SelectedKey = Key
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetPendingText(Text)
+        UIVisuals.PendingText = tostring(Text or "")
+    end
+
+    function UIVisuals.ApplySelected()
+        local Entry = UIVisuals.SelectedKey
+            and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
+        if not Entry then
+            Notify("UI Visuals", "Select a UI element first.")
+            return
+        end
+        local NewText = UIVisuals.PendingText
+        if NewText == "" then
+            Notify("UI Visuals", "Type something into Custom Display Text first.")
+            return
+        end
+
+        -- The cached object may have been destroyed since the scan.
+        local Object = Entry.Object
+        local Alive = false
+        if Object then
+            local Ok, Parent = pcall(function() return Object.Parent end)
+            Alive = Ok and Parent ~= nil
+        end
+
+        local Record = UIVisuals.Edits[Entry.Key]
+        if not Record then
+            Record = {
+                Key = Entry.Key,
+                Name = Entry.Name,
+                ClassName = Entry.ClassName,
+                Parts = Entry.Parts,
+                ParentName = Entry.ParentName,
+                Path = Entry.Path,
+                RealText = Entry.Text,
+                CustomText = NewText,
+                Active = true,
+                Applying = false,
+                Object = nil
+            }
+            UIVisuals.Edits[Entry.Key] = Record
+            UIVisuals.EditCount += 1
+        end
+        Record.CustomText = NewText
+        Record.Active = true
+
+        if not Alive then
+            Object = Relocate(Record)
+            if Object then Entry.Object = Object end
+        end
+        if not Object then
+            Notify("UI Visuals", "That element no longer exists. Scan again.")
+            LogWarning("UI Visuals apply failed: object missing (" .. Entry.Path .. ")", "UI Visuals")
+            return
+        end
+
+        EnsureConnections()
+        AttachRecord(Record, Object)
+        UIVisuals.UpdateSelectionInfo()
+        UIVisuals.UpdateGameInfo()
+        LogSuccess(
+            "UI Visuals set " .. Entry.Path .. " to display " .. Trim(NewText, 40)
+            .. " (local display only)",
+            "UI Visuals"
+        )
+        Notify("UI Visuals", Entry.Name .. " now displays " .. Trim(NewText, 24))
+    end
+
+    function UIVisuals.ResetSelected()
+        local Key = UIVisuals.SelectedKey
+        local Record = Key and UIVisuals.Edits[Key]
+        if not Record then
+            Notify("UI Visuals", "The selected element has no edit to reset.")
+            return
+        end
+        -- If the object went missing, grab the replacement so we restore the
+        -- real label rather than leaving an orphaned fake value on screen.
+        if not Record.Object then
+            local Replacement = Relocate(Record)
+            if Replacement then Record.Object = Replacement end
+        end
+        RemoveRecord(Record, true)
+        UIVisuals.UpdateSelectionInfo()
+        UIVisuals.UpdateGameInfo()
+        Notify("UI Visuals", "Restored " .. Record.Name .. ".")
+    end
+
+    function UIVisuals.ResetAll(Silent)
+        local Count = 0
+        for _, Record in pairs(UIVisuals.Edits) do
+            if not Record.Object then
+                local Replacement = Relocate(Record)
+                if Replacement then Record.Object = Replacement end
+            end
+            RemoveRecord(Record, true)
+            Count += 1
+        end
+        UIVisuals.Edits = {}
+        UIVisuals.EditCount = 0
+        UIVisuals.UpdateSelectionInfo()
+        UIVisuals.UpdateGameInfo()
+        if not Silent then
+            Notify("UI Visuals", "Restored " .. tostring(Count) .. " edited element(s).")
+            LogSuccess("UI Visuals reset " .. tostring(Count) .. " edits", "UI Visuals")
+        end
+        return Count
+    end
+
+    function UIVisuals.SetKeepApplied(Value)
+        UIVisuals.KeepApplied = Value == true
+        if UIVisuals.KeepApplied then
+            EnsureConnections()
+            -- Re-assert immediately instead of waiting for the next pass.
+            for _, Record in pairs(UIVisuals.Edits) do
+                if Record.Active and Record.Object then
+                    WriteText(Record, Record.CustomText)
+                end
+            end
+        end
+    end
+
+    function UIVisuals.SetIncludeHidden(Value)
+        UIVisuals.IncludeHidden = Value == true
+    end
+
+    ----------------------------------------------------------------
+    -- Teardown. Called by Master Reset, Unload, and re-execution.
+    ----------------------------------------------------------------
+    function UIVisuals.Shutdown(Silent)
+        pcall(function() UIVisuals.ResetAll(true) end)
+        for Name, Connection in pairs(UIVisuals.Connections) do
+            if Connection then
+                pcall(function() Connection:Disconnect() end)
+            end
+            UIVisuals.Connections[Name] = nil
+        end
+        UIVisuals.Entries = {}
+        UIVisuals.EntryByKey = {}
+        UIVisuals.LabelToKey = {}
+        UIVisuals.Filtered = {}
+        UIVisuals.SelectedKey = nil
+        UIVisuals.LastScanCount = 0
+        UIVisuals.Scanning = false
+        if not Silent then
+            pcall(UIVisuals.RefreshDropdown)
+            pcall(UIVisuals.UpdateSelectionInfo)
+        end
+    end
+end
+--==============================================================
 -- SAFE CALLBACKS
 --==============================================================
 local function SafeFeatureCallback(Feature, Callback)
@@ -2144,7 +2988,7 @@ do
     })
     HomeTab:CreateParagraph({
         Title = "✅ Release Status",
-        Content = "Available • Interface refresh installed • Press " .. UIToggleKey.Name .. " to open or close"
+        Content = "Available • UI Visuals installed • Press " .. UIToggleKey.Name .. " to open or close"
     })
     local SessionStart = os.clock()
     local FrameCount = 0
@@ -2288,6 +3132,19 @@ do
     })
     HomeTab:CreateSection("📜 What's New")
     HomeTab:CreateParagraph({
+        Title = "v2.8 • UI Visuals",
+        Content =
+            "• Added UI Visuals to the Visuals tab: a client-side PlayerGui text editor"
+            .. "\n• Scans TextLabel, TextButton, and TextBox in your own PlayerGui"
+            .. "\n• Currency and stat labels are ranked to the top of the list"
+            .. "\n• Search filters the full detected list, not just the visible options"
+            .. "\n• Keep Custom Text Applied re-asserts your value when the game rewrites it"
+            .. "\n• Recreated labels are found again by UI path, name, and class"
+            .. "\n• Reset restores the game's newest real text, not a stale snapshot"
+            .. "\n• BananiHub's own interface is excluded from every scan"
+            .. "\n• Display only: no server data, no leaderstats, no RemoteEvents"
+    })
+    HomeTab:CreateParagraph({
         Title = "v2.7 • Movement Update",
         Content =
             "• Added Auto Walk with Camera or Character direction"
@@ -2309,14 +3166,6 @@ do
             .. "\n• Improved tab, section, button, and setting names"
             .. "\n• Cleaned the Home, Player, Travel, Visuals, Camera, Stats, Guide, and Settings layouts"
             .. "\n• Preserved existing flags, callbacks, configs, and feature behavior"
-    })
-    HomeTab:CreateParagraph({
-        Title = "v2.5 • Previous Release",
-        Content =
-            "• Fixed Fly so it disables cleanly"
-            .. "\n• Rebuilt saved waypoints and route controls"
-            .. "\n• Added tween speed and route delay settings"
-            .. "\n• Improved route playback and removed dead code"
     })
 end
 --==============================================================
@@ -2461,14 +3310,15 @@ local function GiveTeleportTool()
     Tool.Parent = Backpack
     local Mouse = Player:GetMouse()
     local Cooldown = false
-    Tool.Activated:Connect(function()
+    -- Tracked so the tool's connection dies with the hub instead of leaking.
+    TrackConnection(Tool.Activated:Connect(function()
         if Cooldown then return end
         local R = Root()
         if not R or not Mouse.Hit then return end
         Cooldown = true
         R.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
         task.delay(0.25, function() Cooldown = false end)
-    end)
+    end))
     Notify("🍌 Teleport Tool", "Equip Banani Teleporter and click anywhere.")
 end
 --==============================================================
@@ -2903,7 +3753,7 @@ end
 --==============================================================
 do
     local VisualsTab = Window:CreateTab("👁️ Visuals", 4483362458)
-    VisualsTab:CreateParagraph({ Title = "👁️ Visuals & Performance", Content = "Lighting, highlights, ESP, and performance controls." })
+    VisualsTab:CreateParagraph({ Title = "👁️ Visuals & Performance", Content = "Lighting, highlights, ESP, UI text editing, and performance controls." })
     VisualsTab:CreateSection("🌗 Lighting")
     VisualsTab:CreateToggle({ Name = "🌙 Fullbright", Flag = "Visuals_Fullbright", CurrentValue = false, Callback = SetFullbright })
     VisualsTab:CreateToggle({
@@ -2968,6 +3818,79 @@ do
     VisualsTab:CreateToggle({
         Name = "Health ESP", Flag = "Visuals_HealthESP", CurrentValue = false,
         Callback = function(Value) HealthESPEnabled = Value SetPlayerESP() end
+    })
+    --==========================================================
+    -- UI VISUALS
+    --==========================================================
+    VisualsTab:CreateSection("🖥️ UI Visuals")
+    VisualsTab:CreateParagraph({
+        Title = "🖥️ UI Visuals",
+        Content =
+            "Changes the text shown in your own PlayerGui and nothing else."
+            .. "\n\nScan, pick a label, type a value, then Apply. This writes to the"
+            .. " .Text of a GuiObject on your screen only — it does not touch server"
+            .. " data, leaderstats, or RemoteEvents, and it gives you nothing in game."
+            .. " Other players and the server still see your real values."
+    })
+    Runtime.UIVisuals.GameParagraph = VisualsTab:CreateParagraph({
+        Title = "🎮 Game Information",
+        Content =
+            "Game: " .. tostring(PlaceInfo.Name)
+            .. "\nPlaceId: " .. tostring(game.PlaceId)
+            .. "\nDetected UI Text Elements: 0"
+            .. "\nShown In Dropdown: 0"
+            .. "\nActive UI Edits: 0"
+            .. "\nLast Scan: never"
+    })
+    VisualsTab:CreateButton({
+        Name = "🔎 Scan / Refresh UI",
+        Callback = function() Runtime.UIVisuals.Scan() end
+    })
+    VisualsTab:CreateToggle({
+        Name = "👻 Include Hidden / Empty Text", Flag = "UIVisuals_IncludeHidden", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetIncludeHidden(Value) end
+    })
+    VisualsTab:CreateInput({
+        Name = "Search UI",
+        PlaceholderText = "cash, coins, level, wins... (blank = show all)",
+        RemoveTextAfterFocusLost = false,
+        Callback = function(Text) Runtime.UIVisuals.SetSearch(Text) end
+    })
+    Runtime.UIVisuals.Dropdown = VisualsTab:CreateDropdown({
+        Name = "Select UI Text",
+        Options = {Runtime.UIVisuals.Placeholder},
+        CurrentOption = {Runtime.UIVisuals.Placeholder},
+        SearchBarEnabled = true,
+        Callback = function(Option)
+            local Label = type(Option) == "table" and Option[1] or Option
+            Runtime.UIVisuals.SelectLabel(Label)
+        end
+    })
+    Runtime.UIVisuals.InfoParagraph = VisualsTab:CreateParagraph({
+        Title = "🎯 Selected UI",
+        Content = "Nothing selected. Scan, then pick something from Select UI Text."
+    })
+    VisualsTab:CreateInput({
+        Name = "Custom Display Text",
+        PlaceholderText = "Example: 999999999 or $999,999,999",
+        RemoveTextAfterFocusLost = false,
+        Callback = function(Text) Runtime.UIVisuals.SetPendingText(Text) end
+    })
+    VisualsTab:CreateButton({
+        Name = "✅ Apply To Selected",
+        Callback = function() Runtime.UIVisuals.ApplySelected() end
+    })
+    VisualsTab:CreateToggle({
+        Name = "🔒 Keep Custom Text Applied", Flag = "UIVisuals_KeepApplied", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetKeepApplied(Value) end
+    })
+    VisualsTab:CreateButton({
+        Name = "↩ Reset Selected",
+        Callback = function() Runtime.UIVisuals.ResetSelected() end
+    })
+    VisualsTab:CreateButton({
+        Name = "♻ Reset All UI Edits",
+        Callback = function() Runtime.UIVisuals.ResetAll(false) end
     })
 end
 --==============================================================
@@ -3118,7 +4041,7 @@ do
     end
     local BuildSuccess, BuildError = pcall(function()
         local StatsTab = Window:CreateTab("📊 Stats", 4483362458)
-        StatsTab:CreateParagraph({ Title = "📊 Player Stats", Content = "Select a player to view profile, character, tools, distance, and leaderstats." })
+        StatsTab:CreateParagraph({ Title = "📊 Player Stats", Content = "Select a player to view profile, character, tools, distance, and leaderstats. These are the real server values and are not affected by UI Visuals." })
         StatsTab:CreateSection("🔎 Player Search")
         Runtime.StatsPlayerMap = {}
         Runtime.RefreshStatsPlayers = function()
@@ -3321,9 +4244,10 @@ do
         ["Freecam"] = "Open Camera > Freecam Controls. WASD to move, Q/E down/up, hold right-click to look.",
         ["Box ESP"] = "Draws a box around visible player characters.",
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
+        ["UI Visuals"] = "Visuals > UI Visuals. Press Scan / Refresh UI to list the TextLabels, TextButtons, and TextBoxes in your PlayerGui, with currency and stat labels ranked first. Search filters the full list. Pick one from Select UI Text, type into Custom Display Text, then Apply. Keep Custom Text Applied re-applies your value when the game rewrites the label, and edits survive the label being destroyed and rebuilt. Reset Selected and Reset All restore the game's newest real text. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
         ["Performance Mode"] = "Visuals > Performance. Disables particles, post-processing, shadows, and complex materials. Turning it off restores visuals."
     }
-    local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "Performance Mode"}
+    local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "UI Visuals", "Performance Mode"}
     HelpTab:CreateDropdown({
         Name = "Select a Feature", Options = Order, CurrentOption = {"Route Builder"}, SearchBarEnabled = true,
         Callback = function(Option)
@@ -3353,6 +4277,11 @@ local function MasterReset()
     pcall(function() SetSpiderClimb(false) end)
     pcall(function() SetAutoWalk(false) end)
     pcall(function() SetNoclip(false) end)
+    -- Restore every edited label and drop the UI Visuals connections.
+    if Runtime.UIVisuals then
+        pcall(function() Runtime.UIVisuals.SetKeepApplied(false) end)
+        pcall(function() Runtime.UIVisuals.Shutdown(false) end)
+    end
     BoxESPEnabled = false
     HealthESPEnabled = false
     AutoJumpEnabled = false
@@ -3376,10 +4305,14 @@ local function MasterReset()
     if H then Camera.CameraSubject = H end
     if Rayfield.Flags then
         for FlagName, Flag in pairs(Rayfield.Flags) do
-            if Flag and Flag.Set then
+            -- Only switch OFF real toggles. The old name test also matched
+            -- sliders like Player_FlySpeed and pushed false into them, which
+            -- either errored inside the pcall or wiped the stored value.
+            if Flag and Flag.Set and typeof(Flag.CurrentValue) == "boolean" then
                 if string.find(FlagName, "Enabled") or string.find(FlagName, "Fly")
                     or string.find(FlagName, "Noclip") or string.find(FlagName, "ESP")
-                    or string.find(FlagName, "Chams") or string.find(FlagName, "Performance") then
+                    or string.find(FlagName, "Chams") or string.find(FlagName, "Performance")
+                    or string.find(FlagName, "UIVisuals") then
                     pcall(function() Flag:Set(false) end)
                 end
             end
@@ -3403,6 +4336,12 @@ local function UnloadBananiHub()
     pcall(function() SetAntiRagdoll(false) end)
     pcall(function() SetSpiderClimb(false) end)
     pcall(function() SetAutoWalk(false) end)
+    -- UI Visuals: restore every edited label and disconnect everything it owns
+    -- BEFORE the window is destroyed, so nothing is left watching PlayerGui.
+    if Runtime.UIVisuals then
+        pcall(function() Runtime.UIVisuals.KeepApplied = false end)
+        pcall(function() Runtime.UIVisuals.Shutdown(true) end)
+    end
     BoxESPEnabled = false
     HealthESPEnabled = false
     pcall(SetPlayerESP)
@@ -3430,6 +4369,13 @@ local function UnloadBananiHub()
     }
     for _, Connection in ipairs(Connections) do
         if Connection then pcall(function() Connection:Disconnect() end) end
+    end
+    -- Freeze had its own connection stored on Runtime and was never included
+    -- in the unload sweep, so a frozen character kept a live Heartbeat after
+    -- the hub was gone. Disconnected explicitly now.
+    if Runtime.FreezeConnection then
+        pcall(function() Runtime.FreezeConnection:Disconnect() end)
+        Runtime.FreezeConnection = nil
     end
     for _, Connection in ipairs(Runtime.PerformanceConnections) do
         if Connection then pcall(function() Connection:Disconnect() end) end
@@ -3707,6 +4653,17 @@ TrackConnection(Player.CharacterAdded:Connect(function(NewCharacter)
         if FlyEnabled then StartFly() end
         if AutoWalkEnabled then SetAutoWalk(true) end
         if FreecamEnabled or Spectating then SetCharacterLocked(true) end
+    end)
+end))
+-- Respawning usually rebuilds the whole HUD, so a stale scan would point at
+-- destroyed labels. Re-run the scan quietly if UI Visuals has been used.
+TrackConnection(Player.CharacterAdded:Connect(function()
+    task.delay(2, function()
+        if Unloaded then return end
+        local UIV = Runtime.UIVisuals
+        if UIV and UIV.LastScanCount > 0 and not UIV.Scanning then
+            pcall(UIV.Scan)
+        end
     end)
 end))
 SetLoadingStage("Loading preferences...")
