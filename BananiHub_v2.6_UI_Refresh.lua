@@ -1,5 +1,5 @@
 -- ==========================================================
--- 🍌 BANANIHUB v2.8 • UI VISUALS 🍌
+-- 🍌 BANANIHUB v2.9 • RICH TEXT UI VISUALS 🍌
 -- Release status: Available
 -- L = Open / Close
 -- ==========================================================
@@ -32,7 +32,7 @@ local PlaceInfo = {
     Creator = "Loading...",
     IconImageAssetId = 0
 }
-local BANANIHUB_VERSION = "2.8"
+local BANANIHUB_VERSION = "2.9"
 local UIToggleKey = Enum.KeyCode.L
 --==============================================================
 -- HUB GUI TRACKER
@@ -2147,14 +2147,19 @@ do
         EntryByKey = {},     -- Key -> entry
         LabelToKey = {},     -- dropdown label -> Key
         Filtered = {},       -- entries currently offered in the dropdown
+        Groups = {},         -- GroupId -> array of entries that form one stat
         Edits = {},          -- Key -> edit record (only live edits)
         EditCount = 0,
         Connections = {},    -- every RBXScriptConnection this module owns
         SelectedKey = nil,
         SearchText = "",
         PendingText = "",
+        GroupFilter = nil,   -- when set, the dropdown shows only that group
         KeepApplied = false,
         IncludeHidden = false,
+        InputIsRich = false, -- treat the typed value as raw RichText markup
+        EditMode = "number", -- "number" | "segment" | "whole"
+        TargetIndex = 1,     -- which number / which segment
         Scanning = false,
         LastScanCount = 0,
         LastScanSeconds = 0,
@@ -2180,10 +2185,16 @@ do
     }
     local CurrencySymbols = {"$", "€", "£", "¥", "₽", "R$"}
 
+    -- Every internal function hangs off this one table on purpose. The main
+    -- chunk is already near Luau's 200-locals-per-scope ceiling, so a dozen
+    -- separate `local function`s here would push the file over and it would
+    -- stop compiling entirely.
+    local Helper = {}
+
     ----------------------------------------------------------------
-    -- Small utilities
+    -- Instance utilities
     ----------------------------------------------------------------
-    local function GetPlayerGui()
+    function Helper.GetPlayerGui()
         local Success, Gui = pcall(function()
             return Player:FindFirstChildOfClass("PlayerGui")
         end)
@@ -2191,16 +2202,24 @@ do
         return nil
     end
 
-    local function IsTextObject(Object)
+    function Helper.IsTextObject(Object)
         return Object:IsA("TextLabel")
             or Object:IsA("TextButton")
             or Object:IsA("TextBox")
     end
 
+    -- RichText is read fresh every time rather than cached: a game can flip
+    -- it at runtime, and guessing wrong is how tags get mangled.
+    function Helper.IsRich(Object)
+        if not Object then return false end
+        local Success, Value = pcall(function() return Object.RichText end)
+        return Success and Value == true
+    end
+
     -- True when the object belongs to BananiHub's own interface. Two layers:
     -- the ScreenGuis we claimed at load time, plus a name check for anything
     -- the hub or its library recreates later.
-    local function IsHubOwned(Object)
+    function Helper.IsHubOwned(Object)
         local Current = Object
         local Depth = 0
         while Current and Depth < 40 do
@@ -2220,7 +2239,7 @@ do
     end
 
     -- Memoised visibility walk. Cache is per-scan so it never goes stale.
-    local function IsShown(Object, Cache, Gui)
+    function Helper.IsShown(Object, Cache, Gui)
         if not Object or Object == Gui then return true end
         local Cached = Cache[Object]
         if Cached ~= nil then return Cached end
@@ -2229,16 +2248,16 @@ do
             Result = Object.Enabled ~= false
         elseif Object:IsA("GuiObject") then
             Result = Object.Visible ~= false
-                and IsShown(Object.Parent, Cache, Gui)
+                and Helper.IsShown(Object.Parent, Cache, Gui)
         else
-            Result = IsShown(Object.Parent, Cache, Gui)
+            Result = Helper.IsShown(Object.Parent, Cache, Gui)
         end
         Cache[Object] = Result
         return Result
     end
 
     -- Path relative to PlayerGui, e.g. {"HUD","Top","CashLabel"}.
-    local function GetPathParts(Object, Gui)
+    function Helper.GetPathParts(Object, Gui)
         local Parts = {}
         local Current = Object
         local Depth = 0
@@ -2251,13 +2270,13 @@ do
         return Parts
     end
 
-    local function PathString(Parts)
+    function Helper.PathString(Parts)
         return "PlayerGui." .. table.concat(Parts, ".")
     end
 
     -- Walk a stored path back down from PlayerGui. Used to find a label the
     -- game destroyed and rebuilt in the same place.
-    local function ResolveParts(Gui, Parts, ClassName)
+    function Helper.ResolveParts(Gui, Parts, ClassName)
         local Current = Gui
         for _, Name in ipairs(Parts) do
             local Found
@@ -2271,7 +2290,7 @@ do
         return Current
     end
 
-    local function Trim(Text, Limit)
+    function Helper.Trim(Text, Limit)
         Text = tostring(Text or "")
         Text = (Text:gsub("[\r\n\t]", " "))
         if #Text > Limit then
@@ -2280,8 +2299,255 @@ do
         return Text
     end
 
-    -- Currency/stat labels rank higher so they land near the top.
-    local function ScoreEntry(Name, Text)
+    ----------------------------------------------------------------
+    -- RichText handling
+    --
+    -- The whole point of this section: a formatted stat is markup, not a
+    -- string. "<font color=\"#FF0000\">25</font> / 100" must come back out
+    -- as "<font color=\"#FF0000\">999</font> / 100", with the tags exactly
+    -- where they were. So we tokenise into tags and text runs, edit only a
+    -- text run, and reassemble. Tags are never parsed, rewritten, reordered,
+    -- or dropped - they are copied through byte for byte.
+    ----------------------------------------------------------------
+
+    -- Split markup into an ordered list of {Kind = "tag"|"text", Value = ...}.
+    function Helper.Tokenize(Source, IsRich)
+        Source = tostring(Source or "")
+        if not IsRich then
+            return {{Kind = "text", Value = Source}}
+        end
+        local Tokens = {}
+        local Index = 1
+        while Index <= #Source do
+            local TagStart, TagEnd = string.find(Source, "<[^<>]*>", Index)
+            if not TagStart then
+                table.insert(Tokens, {Kind = "text", Value = string.sub(Source, Index)})
+                break
+            end
+            if TagStart > Index then
+                table.insert(Tokens, {
+                    Kind = "text",
+                    Value = string.sub(Source, Index, TagStart - 1)
+                })
+            end
+            table.insert(Tokens, {
+                Kind = "tag",
+                Value = string.sub(Source, TagStart, TagEnd)
+            })
+            Index = TagEnd + 1
+        end
+        return Tokens
+    end
+
+    function Helper.Rebuild(Tokens)
+        local Pieces = {}
+        for _, Token in ipairs(Tokens) do
+            table.insert(Pieces, Token.Value)
+        end
+        return table.concat(Pieces)
+    end
+
+    -- What the label actually reads as on screen, tags removed. Used for the
+    -- dropdown label and for Search, so you look for "25 / 100" rather than
+    -- a wall of font markup.
+    function Helper.StripTags(Source, IsRich)
+        if not IsRich then return tostring(Source or "") end
+        local Plain = string.gsub(tostring(Source or ""), "<[^<>]*>", "")
+        Plain = string.gsub(Plain, "&lt;", "<")
+        Plain = string.gsub(Plain, "&gt;", ">")
+        Plain = string.gsub(Plain, "&quot;", '"')
+        Plain = string.gsub(Plain, "&apos;", "'")
+        Plain = string.gsub(Plain, "&#39;", "'")
+        Plain = string.gsub(Plain, "&amp;", "&")
+        return Plain
+    end
+
+    -- Typed input is escaped before it goes into a RichText label, otherwise
+    -- a stray "<" from the user silently breaks the surrounding markup.
+    -- Skipped when the user has said their input IS markup, and never applied
+    -- to a plain label (where "&lt;" would render literally).
+    function Helper.EscapeRich(Value)
+        Value = string.gsub(tostring(Value or ""), "&", "&amp;")
+        Value = string.gsub(Value, "<", "&lt;")
+        Value = string.gsub(Value, ">", "&gt;")
+        return Value
+    end
+
+    -- Spans occupied by HTML entities, so a digit inside "&#39;" is never
+    -- mistaken for part of the stat.
+    function Helper.EntitySpans(Value, IsRich)
+        if not IsRich then return {} end
+        local Spans = {}
+        local Index = 1
+        while true do
+            local Start, Finish = string.find(Value, "&#?%w+;", Index)
+            if not Start then break end
+            table.insert(Spans, {Start = Start, Finish = Finish})
+            Index = Finish + 1
+        end
+        return Spans
+    end
+
+    -- Every numeric run in one text token, left to right. Handles grouped
+    -- digits ("1,250,000") and decimals ("12.5") as single runs.
+    function Helper.NumberRuns(Value, IsRich)
+        local Spans = Helper.EntitySpans(Value, IsRich)
+        local Runs = {}
+        local Index = 1
+        while true do
+            local Start, Finish = string.find(Value, "%d[%d,%.]*", Index)
+            if not Start then break end
+            local Blocked = false
+            for _, Span in ipairs(Spans) do
+                if Start <= Span.Finish and Finish >= Span.Start then
+                    Blocked = true
+                    break
+                end
+            end
+            if not Blocked then
+                -- Drop trailing separators: "100." should keep its period.
+                local Piece = string.sub(Value, Start, Finish)
+                local Clean = string.gsub(Piece, "[,%.]+$", "")
+                if Clean ~= "" then
+                    table.insert(Runs, {
+                        Start = Start,
+                        Finish = Start + #Clean - 1
+                    })
+                end
+            end
+            Index = Finish + 1
+        end
+        return Runs
+    end
+
+    -- Replace only the Nth number, wherever it lives in the markup. Tags,
+    -- prefixes ("$"), and suffixes (" / 100", " Coins") all survive.
+    function Helper.ReplaceNumber(Source, IsRich, Occurrence, NewValue)
+        local Tokens = Helper.Tokenize(Source, IsRich)
+        local Count = 0
+        local Replaced = false
+        for _, Token in ipairs(Tokens) do
+            if Token.Kind == "text" and not Replaced then
+                for _, Run in ipairs(Helper.NumberRuns(Token.Value, IsRich)) do
+                    Count += 1
+                    if Count == Occurrence then
+                        Token.Value =
+                            string.sub(Token.Value, 1, Run.Start - 1)
+                            .. NewValue
+                            .. string.sub(Token.Value, Run.Finish + 1)
+                        Replaced = true
+                        break
+                    end
+                end
+            end
+        end
+        return Helper.Rebuild(Tokens), Replaced
+    end
+
+    -- Text runs that carry visible content, with the font colour that is open
+    -- over each one. This is what "segment" editing targets.
+    function Helper.Segments(Source, IsRich)
+        local Tokens = Helper.Tokenize(Source, IsRich)
+        local Segments = {}
+        local ColorStack = {}
+        for TokenIndex, Token in ipairs(Tokens) do
+            if Token.Kind == "tag" then
+                local Lower = string.lower(Token.Value)
+                if string.find(Lower, "^</font") then
+                    if #ColorStack > 0 then table.remove(ColorStack) end
+                elseif string.find(Lower, "^<font") then
+                    local Color = string.match(Token.Value, 'color%s*=%s*"([^"]*)"')
+                        or string.match(Token.Value, "color%s*=%s*'([^']*)'")
+                    table.insert(ColorStack, Color or "inherited")
+                end
+            elseif string.find(Token.Value, "%S") then
+                table.insert(Segments, {
+                    TokenIndex = TokenIndex,
+                    Text = Token.Value,
+                    Color = ColorStack[#ColorStack] or "label default"
+                })
+            end
+        end
+        return Segments, Tokens
+    end
+
+    -- Swap one whole segment, leaving its wrapper tags (and therefore its
+    -- colour, stroke, size, and every other tag-driven style) untouched.
+    function Helper.ReplaceSegment(Source, IsRich, Index, NewValue)
+        local Segments, Tokens = Helper.Segments(Source, IsRich)
+        local Target = Segments[Index]
+        if not Target then
+            return Source, false
+        end
+        Tokens[Target.TokenIndex].Value = NewValue
+        return Helper.Rebuild(Tokens), true
+    end
+
+    -- Build what should be on screen, from whatever the label currently says.
+    -- Recomputing from the LIVE string (instead of storing one fixed result)
+    -- is what lets a locked edit keep working when the game re-renders the
+    -- label with new colours or a new denominator.
+    function Helper.Compose(Record, Source, IsRich)
+        local Value = Record.Value
+        if IsRich and not Record.InputIsRich then
+            Value = Helper.EscapeRich(Value)
+        end
+        if Record.Mode == "whole" then
+            return Value, true
+        elseif Record.Mode == "segment" then
+            return Helper.ReplaceSegment(Source, IsRich, Record.Occurrence, Value)
+        end
+        return Helper.ReplaceNumber(Source, IsRich, Record.Occurrence, Value)
+    end
+
+    -- Read-only formatting report. Nothing in this module ever writes any of
+    -- these properties - only .Text is ever assigned - so colours, fonts,
+    -- sizes, strokes, gradients and transparency are preserved by
+    -- construction rather than by being saved and restored.
+    function Helper.Describe(Object)
+        local Lines = {}
+        local function Add(LabelText, Getter)
+            local Ok, Value = pcall(Getter)
+            if Ok and Value ~= nil then
+                table.insert(Lines, LabelText .. ": " .. tostring(Value))
+            end
+        end
+        Add("RichText", function() return Object.RichText end)
+        Add("TextColor3", function()
+            local C = Object.TextColor3
+            return string.format("#%02X%02X%02X",
+                math.floor(C.R * 255 + 0.5),
+                math.floor(C.G * 255 + 0.5),
+                math.floor(C.B * 255 + 0.5))
+        end)
+        Add("Font", function()
+            local Ok, Face = pcall(function() return Object.FontFace end)
+            if Ok and Face then return tostring(Face) end
+            return tostring(Object.Font)
+        end)
+        Add("TextSize", function() return Object.TextSize end)
+        Add("Scaled", function() return Object.TextScaled end)
+        Add("TextTransparency", function() return Object.TextTransparency end)
+        Add("StrokeTransparency", function() return Object.TextStrokeTransparency end)
+        local Extras = {}
+        local Ok = pcall(function()
+            if Object:FindFirstChildOfClass("UIGradient") then
+                table.insert(Extras, "UIGradient")
+            end
+            if Object:FindFirstChildOfClass("UIStroke") then
+                table.insert(Extras, "UIStroke")
+            end
+        end)
+        if Ok and #Extras > 0 then
+            table.insert(Lines, "Children: " .. table.concat(Extras, ", "))
+        end
+        return table.concat(Lines, " • ")
+    end
+
+    ----------------------------------------------------------------
+    -- Scoring
+    ----------------------------------------------------------------
+    function Helper.Score(Name, Text)
         local Score = 0
         local LowerName = string.lower(Name)
         local LowerText = string.lower(Text)
@@ -2310,7 +2576,84 @@ do
         -- "1,234", "  99 ", "5000 Coins": mostly-a-number labels.
         if string.find(Text, "^%s*[%d%.,]+%s*%a*%s*$") then Score += 20 end
         if string.find(LowerText, "%d%s*[kmb]$") then Score += 10 end
+        -- "25 / 100" style split stats are prime targets.
+        if string.find(Text, "%d%s*/%s*%d") then Score += 25 end
         return Score
+    end
+
+    ----------------------------------------------------------------
+    -- Stat group detection
+    --
+    -- Plenty of games build one visible stat out of several TextLabels
+    -- sitting side by side ("25" | "/" | "100", or a green "$" next to a
+    -- white number). Grouping them means you can see the whole stat and then
+    -- edit exactly one piece without touching the styling of the others.
+    ----------------------------------------------------------------
+    function Helper.Rect(Object)
+        local Ok, Position, Size = pcall(function()
+            return Object.AbsolutePosition, Object.AbsoluteSize
+        end)
+        if not Ok or not Position or not Size then return nil end
+        if Size.X <= 0 and Size.Y <= 0 then return nil end
+        return {
+            X = Position.X, Y = Position.Y,
+            W = Size.X, H = Size.Y,
+            CenterY = Position.Y + Size.Y / 2
+        }
+    end
+
+    function Helper.BuildGroups(Entries)
+        local ByParent = {}
+        for _, Entry in ipairs(Entries) do
+            local Parent = Entry.Object and Entry.Object.Parent
+            if Parent then
+                Entry.Rect = Helper.Rect(Entry.Object)
+                if Entry.Rect then
+                    ByParent[Parent] = ByParent[Parent] or {}
+                    table.insert(ByParent[Parent], Entry)
+                end
+            end
+        end
+
+        local Groups = {}
+        local NextId = 0
+        for _, Siblings in pairs(ByParent) do
+            if #Siblings > 1 then
+                table.sort(Siblings, function(A, B) return A.Rect.X < B.Rect.X end)
+                local Current = {Siblings[1]}
+                for Index = 2, #Siblings do
+                    local Previous = Siblings[Index - 1]
+                    local Entry = Siblings[Index]
+                    local Tallest = math.max(Previous.Rect.H, Entry.Rect.H, 1)
+                    local SameRow =
+                        math.abs(Previous.Rect.CenterY - Entry.Rect.CenterY) <= Tallest * 0.6
+                    local Gap = Entry.Rect.X - (Previous.Rect.X + Previous.Rect.W)
+                    local Adjacent = Gap <= math.max(24, Tallest * 0.75)
+                    if SameRow and Adjacent then
+                        table.insert(Current, Entry)
+                    else
+                        if #Current > 1 then table.insert(Groups, Current) end
+                        Current = {Entry}
+                    end
+                end
+                if #Current > 1 then table.insert(Groups, Current) end
+            end
+        end
+
+        local Result = {}
+        for _, Members in ipairs(Groups) do
+            NextId += 1
+            local Id = NextId
+            local Pieces = {}
+            for Position, Entry in ipairs(Members) do
+                Entry.GroupId = Id
+                Entry.GroupIndex = Position
+                Entry.GroupSize = #Members
+                table.insert(Pieces, Entry.PlainText)
+            end
+            Result[Id] = {Members = Members, Preview = table.concat(Pieces, " ")}
+        end
+        return Result
     end
 
     ----------------------------------------------------------------
@@ -2318,7 +2661,7 @@ do
     ----------------------------------------------------------------
     -- Writes go through here so the Text listener can tell OUR write apart
     -- from the game's write and not treat it as a new "real" value.
-    local function WriteText(Record, Value)
+    function Helper.Write(Record, Value)
         local Object = Record.Object
         if not Object then return false end
         Record.Applying = true
@@ -2326,10 +2669,25 @@ do
             Object.Text = Value
         end)
         Record.Applying = false
+        if Success then Record.LastApplied = Value end
         return Success
     end
 
-    local function DetachSignals(Record)
+    -- Recompute from the label's current contents and push the result.
+    function Helper.Reapply(Record, Source)
+        local Object = Record.Object
+        if not Object then return false end
+        local IsRich = Helper.IsRich(Object)
+        local Result, Ok = Helper.Compose(Record, Source, IsRich)
+        if not Ok then
+            -- No matching number/segment in the new string. Leave the game's
+            -- text alone rather than overwriting formatted markup blindly.
+            return false
+        end
+        return Helper.Write(Record, Result)
+    end
+
+    function Helper.Detach(Record)
         for _, Field in ipairs({"TextConnection", "AncestryConnection"}) do
             local Connection = Record[Field]
             if Connection then
@@ -2342,13 +2700,13 @@ do
     -- Bind a record to a live object. Safe to call again after the game
     -- recreates the label; old connections are dropped first, so rescanning
     -- can never stack duplicate listeners on the same record.
-    local function AttachRecord(Record, Object)
-        DetachSignals(Record)
+    function Helper.Attach(Record, Object)
+        Helper.Detach(Record)
         Record.Object = Object
         if not Object then return end
 
         local ReadOk, CurrentText = pcall(function() return Object.Text end)
-        if ReadOk and CurrentText ~= Record.CustomText then
+        if ReadOk and CurrentText ~= Record.LastApplied then
             Record.RealText = CurrentText
         end
 
@@ -2359,12 +2717,13 @@ do
                 if Record.Applying or Unloaded then return end
                 local Ok, Value = pcall(function() return Object.Text end)
                 if not Ok then return end
-                if Value == Record.CustomText then return end
-                -- The game just wrote a fresh legitimate value. Remember it
-                -- so Reset restores THIS, not a value from ten minutes ago.
+                if Value == Record.LastApplied then return end
+                -- The game just wrote a fresh legitimate value, tags and all.
+                -- Remember it so Reset restores THIS, not a value from ten
+                -- minutes ago, and so the lock re-edits the NEW markup.
                 Record.RealText = Value
                 if UIVisuals.KeepApplied and Record.Active then
-                    WriteText(Record, Record.CustomText)
+                    Helper.Reapply(Record, Value)
                 end
             end)
         end)
@@ -2382,18 +2741,18 @@ do
         if AncestryOk then Record.AncestryConnection = AncestryConnection end
 
         if Record.Active then
-            WriteText(Record, Record.CustomText)
+            Helper.Reapply(Record, Record.RealText)
         end
     end
 
     -- Find the replacement for a record whose object went away.
-    local function Relocate(Record)
-        local Gui = GetPlayerGui()
+    function Helper.Relocate(Record)
+        local Gui = Helper.GetPlayerGui()
         if not Gui then return nil end
         -- 1. Exact same path, same class. This covers the common case of a
         --    game destroying and rebuilding its own currency label.
-        local Exact = ResolveParts(Gui, Record.Parts, Record.ClassName)
-        if Exact and IsTextObject(Exact) and not IsHubOwned(Exact) then
+        local Exact = Helper.ResolveParts(Gui, Record.Parts, Record.ClassName)
+        if Exact and Helper.IsTextObject(Exact) and not Helper.IsHubOwned(Exact) then
             return Exact
         end
         -- 2. Fall back to a unique Name + ClassName + parent-name match.
@@ -2404,8 +2763,8 @@ do
             for _, Object in ipairs(Gui:GetDescendants()) do
                 if Object.Name == Record.Name
                     and Object.ClassName == Record.ClassName
-                    and IsTextObject(Object)
-                    and not IsHubOwned(Object) then
+                    and Helper.IsTextObject(Object)
+                    and not Helper.IsHubOwned(Object) then
                     local Parent = Object.Parent
                     if Parent and Parent.Name == Record.ParentName then
                         MatchCount += 1
@@ -2419,16 +2778,18 @@ do
         return nil
     end
 
-    local function RemoveRecord(Record, Restore)
+    function Helper.Remove(Record, Restore)
         if Restore then
             local Object = Record.Object
             if Object then
                 Record.Applying = true
+                -- RealText is the raw string the game last set, markup and
+                -- all, so restoring it cannot strip tags.
                 pcall(function() Object.Text = Record.RealText end)
                 Record.Applying = false
             end
         end
-        DetachSignals(Record)
+        Helper.Detach(Record)
         Record.Active = false
         if UIVisuals.Edits[Record.Key] == Record then
             UIVisuals.Edits[Record.Key] = nil
@@ -2441,34 +2802,34 @@ do
     -- ONE PlayerGui listener + ONE throttled Heartbeat pass, shared by every
     -- edit. Adding a hundred edits adds zero new loops.
     ----------------------------------------------------------------
-    local function TryReattach(Object)
+    function Helper.TryReattach(Object)
         if Unloaded or UIVisuals.EditCount == 0 then return end
         if not Object or not Object.Parent then return end
-        local Gui = GetPlayerGui()
+        local Gui = Helper.GetPlayerGui()
         if not Gui then return end
-        if IsHubOwned(Object) then return end
-        local Parts = GetPathParts(Object, Gui)
+        if Helper.IsHubOwned(Object) then return end
+        local Parts = Helper.GetPathParts(Object, Gui)
         if not Parts then return end
-        local Key = PathString(Parts) .. "|" .. Object.ClassName
+        local Key = Helper.PathString(Parts) .. "|" .. Object.ClassName
         local Record = UIVisuals.Edits[Key]
         if Record and Record.Active and Record.Object ~= Object then
-            AttachRecord(Record, Object)
+            Helper.Attach(Record, Object)
         end
     end
 
-    local function EnsureConnections()
-        local Gui = GetPlayerGui()
+    function Helper.EnsureConnections()
+        local Gui = Helper.GetPlayerGui()
         if not Gui then return false end
 
         if not UIVisuals.Connections.DescendantAdded then
             UIVisuals.Connections.DescendantAdded =
                 Gui.DescendantAdded:Connect(function(Object)
                     if Unloaded or UIVisuals.EditCount == 0 then return end
-                    local Ok, IsText = pcall(IsTextObject, Object)
+                    local Ok, IsText = pcall(Helper.IsTextObject, Object)
                     if not Ok or not IsText then return end
                     -- Deferred: at DescendantAdded time the parent chain is
                     -- set, but properties are often still being filled in.
-                    task.defer(TryReattach, Object)
+                    task.defer(Helper.TryReattach, Object)
                 end)
         end
 
@@ -2495,17 +2856,17 @@ do
                             end
                             if not Alive then
                                 Record.Object = nil
-                                local Replacement = Relocate(Record)
+                                local Replacement = Helper.Relocate(Record)
                                 if Replacement then
-                                    AttachRecord(Record, Replacement)
+                                    Helper.Attach(Record, Replacement)
                                 end
                             elseif UIVisuals.KeepApplied then
                                 local Ok, Value = pcall(function()
                                     return Object.Text
                                 end)
-                                if Ok and Value ~= Record.CustomText then
+                                if Ok and Value ~= Record.LastApplied then
                                     Record.RealText = Value
-                                    WriteText(Record, Record.CustomText)
+                                    Helper.Reapply(Record, Value)
                                 end
                             end
                         end
@@ -2520,6 +2881,8 @@ do
     ----------------------------------------------------------------
     function UIVisuals.UpdateGameInfo()
         if not UIVisuals.GameParagraph then return end
+        local GroupCount = 0
+        for _ in pairs(UIVisuals.Groups) do GroupCount += 1 end
         pcall(function()
             UIVisuals.GameParagraph:Set({
                 Title = "🎮 Game Information",
@@ -2527,7 +2890,9 @@ do
                     "Game: " .. tostring(PlaceInfo.Name)
                     .. "\nPlaceId: " .. tostring(game.PlaceId)
                     .. "\nDetected UI Text Elements: " .. tostring(UIVisuals.LastScanCount)
+                    .. "\nMulti-Label Stat Groups: " .. tostring(GroupCount)
                     .. "\nShown In Dropdown: " .. tostring(#UIVisuals.Filtered)
+                    .. (UIVisuals.GroupFilter and " (group isolated)" or "")
                     .. "\nActive UI Edits: " .. tostring(UIVisuals.EditCount)
                     .. "\nLast Scan: "
                     .. (UIVisuals.LastScanSeconds > 0
@@ -2552,24 +2917,80 @@ do
         end
         local Record = UIVisuals.Edits[Entry.Key]
         local Object = (Record and Record.Object) or Entry.Object
-        local LiveText = "(object missing)"
+        local LiveRaw = "(object missing)"
+        local IsRich = false
         if Object then
             local Ok, Value = pcall(function() return Object.Text end)
-            if Ok then LiveText = Value end
+            if Ok then LiveRaw = Value end
+            IsRich = Helper.IsRich(Object)
         end
-        local RealText = Record and Record.RealText or Entry.Text
+        local RealRaw = Record and Record.RealText or Entry.Text
+
+        -- Segment / number breakdown, so you can see what index to target.
+        local Breakdown = {}
+        local Segments = Helper.Segments(RealRaw, IsRich)
+        for Index, Segment in ipairs(Segments) do
+            table.insert(Breakdown, "  [" .. Index .. "] "
+                .. Helper.Trim(Segment.Text, 24)
+                .. "  (" .. Segment.Color .. ")")
+        end
+        local NumberList = {}
+        do
+            local Count = 0
+            for _, Token in ipairs(Helper.Tokenize(RealRaw, IsRich)) do
+                if Token.Kind == "text" then
+                    for _, Run in ipairs(Helper.NumberRuns(Token.Value, IsRich)) do
+                        Count += 1
+                        table.insert(NumberList, "#" .. Count .. "="
+                            .. string.sub(Token.Value, Run.Start, Run.Finish))
+                    end
+                end
+            end
+        end
+
+        -- Live preview of what Apply would produce with the current settings.
+        local Preview = "(type a value first)"
+        if UIVisuals.PendingText ~= "" then
+            local Draft = {
+                Mode = UIVisuals.EditMode,
+                Value = UIVisuals.PendingText,
+                Occurrence = UIVisuals.TargetIndex,
+                InputIsRich = UIVisuals.InputIsRich
+            }
+            local Result, Ok = Helper.Compose(Draft, RealRaw, IsRich)
+            Preview = Ok and Helper.Trim(Result, 90)
+                or "no match at index " .. tostring(UIVisuals.TargetIndex)
+        end
+
+        local GroupLine = "single label"
+        if Entry.GroupId and UIVisuals.Groups[Entry.GroupId] then
+            GroupLine = "part " .. tostring(Entry.GroupIndex) .. " of "
+                .. tostring(Entry.GroupSize) .. "  →  "
+                .. Helper.Trim(UIVisuals.Groups[Entry.GroupId].Preview, 50)
+        end
+
         pcall(function()
             UIVisuals.InfoParagraph:Set({
                 Title = "🎯 " .. Entry.Name,
                 Content =
-                    "Object: " .. Entry.Name
-                    .. "\nClass: " .. Entry.ClassName
-                    .. "\nCurrent Text: " .. Trim(LiveText, 60)
-                    .. "\nOriginal / Real Text: " .. Trim(RealText, 60)
-                    .. "\nUI Path: " .. Trim(Entry.Path, 140)
+                    "Object: " .. Entry.Name .. "   Class: " .. Entry.ClassName
+                    .. "\nUI Path: " .. Helper.Trim(Entry.Path, 130)
+                    .. "\n\nOn Screen Now: " .. Helper.Trim(Helper.StripTags(LiveRaw, IsRich), 70)
+                    .. "\nRaw Text: " .. Helper.Trim(LiveRaw, 90)
+                    .. "\nOriginal / Real Raw: " .. Helper.Trim(RealRaw, 90)
+                    .. "\n\nFormatting: " .. Helper.Describe(Object or Entry.Object)
+                    .. "\nRichText Segments:\n"
+                    .. (#Breakdown > 0 and table.concat(Breakdown, "\n") or "  (none)")
+                    .. "\nNumbers: "
+                    .. (#NumberList > 0 and table.concat(NumberList, "  ") or "(none)")
+                    .. "\nStat Group: " .. GroupLine
+                    .. "\n\nMode: " .. UIVisuals.EditMode
+                    .. "  Target #: " .. tostring(UIVisuals.TargetIndex)
+                    .. "\nPreview: " .. Preview
                     .. "\nStatus: "
                     .. (Record and Record.Active
-                        and ("edited -> " .. Trim(Record.CustomText, 40))
+                        and ("edited (" .. Record.Mode .. " → "
+                            .. Helper.Trim(Record.Value, 30) .. ")")
                         or "not edited")
             })
         end)
@@ -2610,14 +3031,16 @@ do
     function UIVisuals.ApplyFilter()
         local Query = string.lower(UIVisuals.SearchText or "")
         local Result = {}
-        if Query == "" then
-            Result = table.clone(UIVisuals.Entries)
-        else
-            for _, Entry in ipairs(UIVisuals.Entries) do
-                if string.find(Entry.SearchBlob, Query, 1, true) then
-                    table.insert(Result, Entry)
-                end
+        for _, Entry in ipairs(UIVisuals.Entries) do
+            local Keep = true
+            if UIVisuals.GroupFilter and Entry.GroupId ~= UIVisuals.GroupFilter then
+                Keep = false
             end
+            if Keep and Query ~= ""
+                and not string.find(Entry.SearchBlob, Query, 1, true) then
+                Keep = false
+            end
+            if Keep then table.insert(Result, Entry) end
         end
         UIVisuals.Filtered = Result
         UIVisuals.RefreshDropdown()
@@ -2625,7 +3048,32 @@ do
 
     function UIVisuals.SetSearch(Text)
         UIVisuals.SearchText = tostring(Text or "")
+        -- Typing a search means you want the whole list back, not one group.
+        if UIVisuals.SearchText ~= "" then UIVisuals.GroupFilter = nil end
         UIVisuals.ApplyFilter()
+    end
+
+    -- Show only the labels that make up the selected stat, so a "25 / 100"
+    -- built from three TextLabels can be worked through piece by piece.
+    function UIVisuals.ToggleGroupIsolation()
+        if UIVisuals.GroupFilter then
+            UIVisuals.GroupFilter = nil
+            UIVisuals.ApplyFilter()
+            Notify("UI Visuals", "Showing all detected UI again.")
+            return
+        end
+        local Entry = UIVisuals.SelectedKey
+            and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
+        if not Entry or not Entry.GroupId then
+            Notify("UI Visuals", "The selected label is not part of a multi-label stat.")
+            return
+        end
+        UIVisuals.GroupFilter = Entry.GroupId
+        UIVisuals.SearchText = ""
+        UIVisuals.ApplyFilter()
+        Notify("UI Visuals",
+            "Isolated " .. tostring(Entry.GroupSize) .. " labels: "
+            .. Helper.Trim(UIVisuals.Groups[Entry.GroupId].Preview, 40))
     end
 
     ----------------------------------------------------------------
@@ -2636,14 +3084,14 @@ do
             Notify("UI Visuals", "A scan is already running.")
             return
         end
-        local Gui = GetPlayerGui()
+        local Gui = Helper.GetPlayerGui()
         if not Gui then
             Notify("UI Visuals", "PlayerGui is not available yet.")
             LogWarning("UI Visuals scan failed: no PlayerGui", "UI Visuals")
             return
         end
         UIVisuals.Scanning = true
-        EnsureConnections()
+        Helper.EnsureConnections()
 
         local StartClock = os.clock()
         local Entries = {}
@@ -2654,14 +3102,16 @@ do
             local Descendants = Gui:GetDescendants()
             for Index, Object in ipairs(Descendants) do
                 if Unloaded then break end
-                if IsTextObject(Object) and not IsHubOwned(Object) then
-                    local Text = Object.Text
+                if Helper.IsTextObject(Object) and not Helper.IsHubOwned(Object) then
+                    local Raw = Object.Text
+                    local IsRich = Helper.IsRich(Object)
+                    local Plain = Helper.StripTags(Raw, IsRich)
                     local Shown = UIVisuals.IncludeHidden
-                        or (Text ~= "" and IsShown(Object, VisibilityCache, Gui))
+                        or (Plain ~= "" and Helper.IsShown(Object, VisibilityCache, Gui))
                     if Shown then
-                        local Parts = GetPathParts(Object, Gui)
+                        local Parts = Helper.GetPathParts(Object, Gui)
                         if Parts then
-                            local Path = PathString(Parts)
+                            local Path = Helper.PathString(Parts)
                             local Key = Path .. "|" .. Object.ClassName
                             -- Roblox allows sibling name collisions, so a path
                             -- is not guaranteed unique. Suffix duplicates.
@@ -2678,14 +3128,18 @@ do
                                 Key = Key,
                                 Name = Object.Name,
                                 ClassName = Object.ClassName,
-                                Text = Text,
+                                Text = Raw,          -- raw markup, edited in place
+                                PlainText = Plain,   -- what you actually read
+                                IsRich = IsRich,
                                 Path = Path,
                                 Parts = Parts,
                                 ParentName = ParentName,
-                                Score = ScoreEntry(Object.Name, Text)
+                                Score = Helper.Score(Object.Name, Plain)
                             }
+                            -- Search matches the rendered text and the markup,
+                            -- so "cash" finds it whether or not it is tagged.
                             Entry.SearchBlob = string.lower(
-                                Object.Name .. " " .. Text .. " " .. Path
+                                Object.Name .. " " .. Plain .. " " .. Raw .. " " .. Path
                             )
                             table.insert(Entries, Entry)
                             EntryByKey[Key] = Entry
@@ -2705,6 +3159,12 @@ do
             return
         end
 
+        -- Neighbouring labels that render as one stat, worked out before the
+        -- sort so grouping is based on real screen positions.
+        local Groups = {}
+        pcall(function() Groups = Helper.BuildGroups(Entries) end)
+        UIVisuals.Groups = Groups
+
         -- Currency/stat-looking labels first, then alphabetical.
         table.sort(Entries, function(A, B)
             if A.Score ~= B.Score then return A.Score > B.Score end
@@ -2713,10 +3173,16 @@ do
         end)
 
         -- Build display labels, disambiguating collisions with the path tail
-        -- so two "Amount" labels are still telling apart.
+        -- so two "Amount" labels are still telling apart. Group members are
+        -- tagged so a split stat is obvious in the list.
         local UsedLabels = {}
         for _, Entry in ipairs(Entries) do
-            local Base = Entry.Name .. ' | "' .. Trim(Entry.Text, 26) .. '"'
+            local Base = Entry.Name .. ' | "' .. Helper.Trim(Entry.PlainText, 26) .. '"'
+            if Entry.IsRich then Base = Base .. " 🎨" end
+            if Entry.GroupId then
+                Base = Base .. " ⛓" .. tostring(Entry.GroupIndex)
+                    .. "/" .. tostring(Entry.GroupSize)
+            end
             local Label = Base
             if UsedLabels[Label] then
                 local Depth = #Entry.Parts
@@ -2741,23 +3207,26 @@ do
         UIVisuals.LastScanCount = #Entries
         UIVisuals.LastScanSeconds = os.clock() - StartClock
 
-        -- Rebind live edits to the freshly scanned objects. AttachRecord
+        -- Rebind live edits to the freshly scanned objects. Attach
         -- disconnects first, so rescanning never doubles up connections.
         for Key, Record in pairs(UIVisuals.Edits) do
             local Entry = EntryByKey[Key]
             if Entry then
                 if Record.Object ~= Entry.Object then
-                    AttachRecord(Record, Entry.Object)
+                    Helper.Attach(Record, Entry.Object)
                 end
             elseif not Record.Object then
-                local Replacement = Relocate(Record)
-                if Replacement then AttachRecord(Record, Replacement) end
+                local Replacement = Helper.Relocate(Record)
+                if Replacement then Helper.Attach(Record, Replacement) end
             end
         end
 
         -- Selection survives a rescan when the same object is still there.
         if UIVisuals.SelectedKey and not EntryByKey[UIVisuals.SelectedKey] then
             UIVisuals.SelectedKey = nil
+        end
+        if UIVisuals.GroupFilter and not Groups[UIVisuals.GroupFilter] then
+            UIVisuals.GroupFilter = nil
         end
 
         UIVisuals.Scanning = false
@@ -2785,6 +3254,29 @@ do
 
     function UIVisuals.SetPendingText(Text)
         UIVisuals.PendingText = tostring(Text or "")
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetEditMode(Mode)
+        Mode = tostring(Mode or "")
+        if string.find(Mode, "Segment", 1, true) then
+            UIVisuals.EditMode = "segment"
+        elseif string.find(Mode, "Whole", 1, true) then
+            UIVisuals.EditMode = "whole"
+        else
+            UIVisuals.EditMode = "number"
+        end
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetTargetIndex(Value)
+        UIVisuals.TargetIndex = math.max(math.floor(tonumber(Value) or 1), 1)
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetInputIsRich(Value)
+        UIVisuals.InputIsRich = Value == true
+        UIVisuals.UpdateSelectionInfo()
     end
 
     function UIVisuals.ApplySelected()
@@ -2794,8 +3286,8 @@ do
             Notify("UI Visuals", "Select a UI element first.")
             return
         end
-        local NewText = UIVisuals.PendingText
-        if NewText == "" then
+        local NewValue = UIVisuals.PendingText
+        if NewValue == "" then
             Notify("UI Visuals", "Type something into Custom Display Text first.")
             return
         end
@@ -2818,7 +3310,7 @@ do
                 ParentName = Entry.ParentName,
                 Path = Entry.Path,
                 RealText = Entry.Text,
-                CustomText = NewText,
+                LastApplied = nil,
                 Active = true,
                 Applying = false,
                 Object = nil
@@ -2826,11 +3318,17 @@ do
             UIVisuals.Edits[Entry.Key] = Record
             UIVisuals.EditCount += 1
         end
-        Record.CustomText = NewText
+        -- The record stores the RECIPE, not a finished string. That is what
+        -- lets a locked edit re-apply itself into whatever new markup the
+        -- game renders next.
+        Record.Value = NewValue
+        Record.Mode = UIVisuals.EditMode
+        Record.Occurrence = UIVisuals.TargetIndex
+        Record.InputIsRich = UIVisuals.InputIsRich
         Record.Active = true
 
         if not Alive then
-            Object = Relocate(Record)
+            Object = Helper.Relocate(Record)
             if Object then Entry.Object = Object end
         end
         if not Object then
@@ -2839,16 +3337,32 @@ do
             return
         end
 
-        EnsureConnections()
-        AttachRecord(Record, Object)
+        Helper.EnsureConnections()
+        Helper.Attach(Record, Object)
+
+        -- Attach applies it; check whether the recipe actually matched.
+        local Ok, Current = pcall(function() return Object.Text end)
+        if Ok and Current == Record.RealText and Record.Mode ~= "whole" then
+            Notify("UI Visuals",
+                "No " .. (Record.Mode == "segment" and "segment" or "number")
+                .. " #" .. tostring(Record.Occurrence) .. " in that label.")
+            LogWarning(
+                "UI Visuals apply matched nothing at index "
+                .. tostring(Record.Occurrence) .. " (" .. Entry.Path .. ")",
+                "UI Visuals"
+            )
+        else
+            LogSuccess(
+                "UI Visuals set " .. Entry.Path .. " [" .. Record.Mode .. " #"
+                .. tostring(Record.Occurrence) .. "] to " .. Helper.Trim(NewValue, 40)
+                .. " (local display only)",
+                "UI Visuals"
+            )
+            Notify("UI Visuals", Entry.Name .. " now displays " .. Helper.Trim(NewValue, 24))
+        end
+
         UIVisuals.UpdateSelectionInfo()
         UIVisuals.UpdateGameInfo()
-        LogSuccess(
-            "UI Visuals set " .. Entry.Path .. " to display " .. Trim(NewText, 40)
-            .. " (local display only)",
-            "UI Visuals"
-        )
-        Notify("UI Visuals", Entry.Name .. " now displays " .. Trim(NewText, 24))
     end
 
     function UIVisuals.ResetSelected()
@@ -2861,10 +3375,10 @@ do
         -- If the object went missing, grab the replacement so we restore the
         -- real label rather than leaving an orphaned fake value on screen.
         if not Record.Object then
-            local Replacement = Relocate(Record)
+            local Replacement = Helper.Relocate(Record)
             if Replacement then Record.Object = Replacement end
         end
-        RemoveRecord(Record, true)
+        Helper.Remove(Record, true)
         UIVisuals.UpdateSelectionInfo()
         UIVisuals.UpdateGameInfo()
         Notify("UI Visuals", "Restored " .. Record.Name .. ".")
@@ -2874,10 +3388,10 @@ do
         local Count = 0
         for _, Record in pairs(UIVisuals.Edits) do
             if not Record.Object then
-                local Replacement = Relocate(Record)
+                local Replacement = Helper.Relocate(Record)
                 if Replacement then Record.Object = Replacement end
             end
-            RemoveRecord(Record, true)
+            Helper.Remove(Record, true)
             Count += 1
         end
         UIVisuals.Edits = {}
@@ -2894,11 +3408,12 @@ do
     function UIVisuals.SetKeepApplied(Value)
         UIVisuals.KeepApplied = Value == true
         if UIVisuals.KeepApplied then
-            EnsureConnections()
+            Helper.EnsureConnections()
             -- Re-assert immediately instead of waiting for the next pass.
             for _, Record in pairs(UIVisuals.Edits) do
                 if Record.Active and Record.Object then
-                    WriteText(Record, Record.CustomText)
+                    local Ok, Current = pcall(function() return Record.Object.Text end)
+                    Helper.Reapply(Record, Ok and Current or Record.RealText)
                 end
             end
         end
@@ -2923,6 +3438,8 @@ do
         UIVisuals.EntryByKey = {}
         UIVisuals.LabelToKey = {}
         UIVisuals.Filtered = {}
+        UIVisuals.Groups = {}
+        UIVisuals.GroupFilter = nil
         UIVisuals.SelectedKey = nil
         UIVisuals.LastScanCount = 0
         UIVisuals.Scanning = false
@@ -2988,7 +3505,7 @@ do
     })
     HomeTab:CreateParagraph({
         Title = "✅ Release Status",
-        Content = "Available • UI Visuals installed • Press " .. UIToggleKey.Name .. " to open or close"
+        Content = "Available • Rich text UI Visuals installed • Press " .. UIToggleKey.Name .. " to open or close"
     })
     local SessionStart = os.clock()
     local FrameCount = 0
@@ -3131,6 +3648,20 @@ do
         end
     })
     HomeTab:CreateSection("📜 What's New")
+    HomeTab:CreateParagraph({
+        Title = "v2.9 • Rich Text & Formatting",
+        Content =
+            "• UI Visuals now edits RichText labels without flattening them"
+            .. "\n• Replace Number Only swaps one value and leaves every tag in place"
+            .. "\n• Replace Segment retargets one coloured run inside a formatted stat"
+            .. "\n• Target Number / Segment # picks which value in a split stat changes"
+            .. "\n• Colours, fonts, sizes, strokes, gradients and transparency are never written"
+            .. "\n• Detects stats built from several neighbouring TextLabels"
+            .. "\n• Isolate Stat Group narrows the list to one split stat"
+            .. "\n• Locked edits re-apply into the game's newest markup, not a stale string"
+            .. "\n• Typed input is escaped before entering RichText unless you opt out"
+            .. "\n• Selection card shows segments, numbers, formatting, and a live preview"
+    })
     HomeTab:CreateParagraph({
         Title = "v2.8 • UI Visuals",
         Content =
@@ -3831,6 +4362,11 @@ do
             .. " .Text of a GuiObject on your screen only — it does not touch server"
             .. " data, leaderstats, or RemoteEvents, and it gives you nothing in game."
             .. " Other players and the server still see your real values."
+            .. "\n\nFormatting is preserved. Colours, fonts, sizes, strokes, gradients"
+            .. " and transparency are never written to at all, and on a RichText label"
+            .. " only the number or segment you target is swapped — the <font> tags"
+            .. " around it are copied through untouched. Labels marked 🎨 use RichText;"
+            .. " labels marked ⛓ are one part of a stat built from several TextLabels."
     })
     Runtime.UIVisuals.GameParagraph = VisualsTab:CreateParagraph({
         Title = "🎮 Game Information",
@@ -3870,11 +4406,38 @@ do
         Title = "🎯 Selected UI",
         Content = "Nothing selected. Scan, then pick something from Select UI Text."
     })
+    VisualsTab:CreateButton({
+        Name = "🔗 Isolate / Release Stat Group",
+        Callback = function() Runtime.UIVisuals.ToggleGroupIsolation() end
+    })
+    VisualsTab:CreateDropdown({
+        Name = "Edit Mode",
+        Options = {
+            "Replace Number Only (keeps formatting)",
+            "Replace Segment (keeps surrounding tags)",
+            "Replace Whole Text (plain overwrite)"
+        },
+        CurrentOption = {"Replace Number Only (keeps formatting)"},
+        Flag = "UIVisuals_EditMode",
+        Callback = function(Option)
+            local Mode = type(Option) == "table" and Option[1] or Option
+            Runtime.UIVisuals.SetEditMode(Mode)
+        end
+    })
+    VisualsTab:CreateSlider({
+        Name = "Target Number / Segment #", Flag = "UIVisuals_TargetIndex",
+        Range = {1, 12}, Increment = 1, CurrentValue = 1,
+        Callback = function(Value) Runtime.UIVisuals.SetTargetIndex(Value) end
+    })
     VisualsTab:CreateInput({
         Name = "Custom Display Text",
         PlaceholderText = "Example: 999999999 or $999,999,999",
         RemoveTextAfterFocusLost = false,
         Callback = function(Text) Runtime.UIVisuals.SetPendingText(Text) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "🎨 My Input Contains RichText Tags", Flag = "UIVisuals_InputIsRich", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetInputIsRich(Value) end
     })
     VisualsTab:CreateButton({
         Name = "✅ Apply To Selected",
@@ -4244,7 +4807,7 @@ do
         ["Freecam"] = "Open Camera > Freecam Controls. WASD to move, Q/E down/up, hold right-click to look.",
         ["Box ESP"] = "Draws a box around visible player characters.",
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
-        ["UI Visuals"] = "Visuals > UI Visuals. Press Scan / Refresh UI to list the TextLabels, TextButtons, and TextBoxes in your PlayerGui, with currency and stat labels ranked first. Search filters the full list. Pick one from Select UI Text, type into Custom Display Text, then Apply. Keep Custom Text Applied re-applies your value when the game rewrites the label, and edits survive the label being destroyed and rebuilt. Reset Selected and Reset All restore the game's newest real text. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
+        ["UI Visuals"] = "Visuals > UI Visuals. Press Scan / Refresh UI to list the TextLabels, TextButtons, and TextBoxes in your PlayerGui, with currency and stat labels ranked first. Search filters the full list. Pick one from Select UI Text, choose an Edit Mode, type into Custom Display Text, then Apply. Replace Number Only swaps a single value and leaves the rest of the label, including RichText font tags, exactly as it was, so a red 25 in a 25 / 100 health label becomes a red 999 with the white / 100 intact; use Target Number / Segment # to pick which value changes. Replace Segment swaps one coloured run and keeps its wrapper tags. Replace Whole Text is a plain overwrite. Colours, fonts, sizes, strokes, gradients and transparency are never written to at all. Labels tagged with a palette use RichText; labels tagged with a chain are one piece of a stat built from several neighbouring TextLabels, and Isolate Stat Group narrows the list to just those pieces. Keep Custom Text Applied re-applies your value into whatever markup the game renders next, and edits survive the label being destroyed and rebuilt. Reset restores the game's newest real text with its tags. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
         ["Performance Mode"] = "Visuals > Performance. Disables particles, post-processing, shadows, and complex materials. Turning it off restores visuals."
     }
     local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "UI Visuals", "Performance Mode"}
