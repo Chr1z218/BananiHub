@@ -1,5 +1,5 @@
 -- ==========================================================
--- 🍌 BANANIHUB v2.9 • RICH TEXT UI VISUALS 🍌
+-- 🍌 BANANIHUB v3.2 • EDIT STAT NAMES 🍌
 -- Release status: Available
 -- L = Open / Close
 -- ==========================================================
@@ -32,7 +32,7 @@ local PlaceInfo = {
     Creator = "Loading...",
     IconImageAssetId = 0
 }
-local BANANIHUB_VERSION = "2.9"
+local BANANIHUB_VERSION = "3.2"
 local UIToggleKey = Enum.KeyCode.L
 --==============================================================
 -- HUB GUI TRACKER
@@ -2155,10 +2155,13 @@ do
         SearchText = "",
         PendingText = "",
         GroupFilter = nil,   -- when set, the dropdown shows only that group
-        KeepApplied = false,
+        KeepApplied = true,   -- on by default: most stat UIs refresh constantly
         IncludeHidden = false,
         InputIsRich = false, -- treat the typed value as raw RichText markup
-        EditMode = "number", -- "number" | "segment" | "whole"
+        UseColor = false,    -- wrap the edited piece in a <font color> tag
+        EditColor = Color3.fromRGB(80, 140, 255),
+        AllowEnableRich = true, -- may turn RichText on to colour a plain label
+        EditMode = "auto",   -- "auto" | "number" | "bracket" | "segment" | "whole"
         TargetIndex = 1,     -- which number / which segment
         Scanning = false,
         LastScanCount = 0,
@@ -2422,26 +2425,174 @@ do
 
     -- Replace only the Nth number, wherever it lives in the markup. Tags,
     -- prefixes ("$"), and suffixes (" / 100", " Coins") all survive.
-    function Helper.ReplaceNumber(Source, IsRich, Occurrence, NewValue)
+    -- Decode one HTML entity to a single character, so the plain projection
+    -- stays 1:1 with its source spans.
+    function Helper.DecodeEntity(Entity)
+        local Named = {
+            ["&lt;"] = "<", ["&gt;"] = ">", ["&amp;"] = "&",
+            ["&quot;"] = '"', ["&apos;"] = "'"
+        }
+        local Direct = Named[string.lower(Entity)]
+        if Direct then return Direct end
+        local Number = string.match(Entity, "^&#(%d+);$")
+        if Number then
+            local Code = tonumber(Number)
+            if Code and Code >= 32 and Code < 127 then
+                return string.char(Code)
+            end
+        end
+        return "?"
+    end
+
+    -- Project markup down to the string the player actually reads, keeping a
+    -- per-character map back into the token list.
+    --
+    -- This is what makes targeting work across tag boundaries. In
+    -- 'Strength [<font color="#0000FF">A</font>]: 2876.48' the "[", the "A"
+    -- and the "]" live in three different tokens, so a per-token search would
+    -- never see the bracket group at all. On the projection it is simply
+    -- "Strength [A]: 2876.48", and the map splices the edit back into exactly
+    -- the right token without disturbing the tags around it.
+    function Helper.Project(Source, IsRich)
         local Tokens = Helper.Tokenize(Source, IsRich)
-        local Count = 0
-        local Replaced = false
-        for _, Token in ipairs(Tokens) do
-            if Token.Kind == "text" and not Replaced then
-                for _, Run in ipairs(Helper.NumberRuns(Token.Value, IsRich)) do
-                    Count += 1
-                    if Count == Occurrence then
-                        Token.Value =
-                            string.sub(Token.Value, 1, Run.Start - 1)
-                            .. NewValue
-                            .. string.sub(Token.Value, Run.Finish + 1)
-                        Replaced = true
-                        break
+        local Characters = {}
+        local Map = {}
+        for TokenIndex, Token in ipairs(Tokens) do
+            if Token.Kind == "text" then
+                local Value = Token.Value
+                local Index = 1
+                while Index <= #Value do
+                    local Char = string.sub(Value, Index, Index)
+                    local Finish = Index
+                    if IsRich and Char == "&" then
+                        local Start, EntityEnd = string.find(Value, "^&#?%w+;", Index)
+                        if Start then
+                            Finish = EntityEnd
+                            Char = Helper.DecodeEntity(string.sub(Value, Start, EntityEnd))
+                        end
                     end
+                    table.insert(Characters, Char)
+                    table.insert(Map, {
+                        Token = TokenIndex, Start = Index, Finish = Finish
+                    })
+                    Index = Finish + 1
                 end
             end
         end
-        return Helper.Rebuild(Tokens), Replaced
+        return table.concat(Characters), Map, Tokens
+    end
+
+    -- Overwrite one plain-text range, in place, inside the token list. Tags
+    -- inside or around the range are left exactly where they are.
+    function Helper.Splice(Tokens, Map, PlainStart, PlainFinish, Replacement)
+        local First, Last = Map[PlainStart], Map[PlainFinish]
+        if not First or not Last then return nil end
+        if First.Token == Last.Token then
+            local Token = Tokens[First.Token]
+            Token.Value = string.sub(Token.Value, 1, First.Start - 1)
+                .. Replacement
+                .. string.sub(Token.Value, Last.Finish + 1)
+        else
+            local Head = Tokens[First.Token]
+            Head.Value = string.sub(Head.Value, 1, First.Start - 1) .. Replacement
+            for Index = First.Token + 1, Last.Token - 1 do
+                if Tokens[Index].Kind == "text" then Tokens[Index].Value = "" end
+            end
+            local Tail = Tokens[Last.Token]
+            Tail.Value = string.sub(Tail.Value, Last.Finish + 1)
+        end
+        return Helper.Rebuild(Tokens)
+    end
+
+    -- Every [bracketed] group in the projection, e.g. the [A] rank tag in
+    -- "Strength [A]: 2876.48". Empty brackets are skipped.
+    function Helper.BracketSpans(Plain)
+        local Spans = {}
+        local Index = 1
+        while true do
+            local Start, Finish = string.find(Plain, "%[[^%[%]]*%]", Index)
+            if not Start then break end
+            if Finish - Start > 1 then
+                -- contents only, brackets themselves are preserved
+                table.insert(Spans, {Start = Start + 1, Finish = Finish - 1})
+            end
+            Index = Finish + 1
+        end
+        return Spans
+    end
+
+    -- The word part of a stat, e.g. "Strength" in "Strength [A]: 2876.48" or
+    -- "Total Coins" in "Total Coins: 300". Runs of letters, keeping internal
+    -- spaces so multi-word names come back whole.
+    --
+    -- Two things are deliberately skipped: anything inside [brackets], which
+    -- is a rank tag rather than a name, and one-letter runs sitting straight
+    -- after a digit, which are unit suffixes like the k in "1.5k".
+    function Helper.NameRuns(Plain)
+        local Brackets = Helper.BracketSpans(Plain)
+        local Runs = {}
+        local Index = 1
+        while true do
+            local Start, Finish = string.find(Plain, "%a[%a%s'&%-]*", Index)
+            if not Start then break end
+            Index = Finish + 1
+            -- A run starting straight after a digit begins with a unit suffix
+            -- (the k in "1.5k Coins"). Step over that letter and any spacing,
+            -- so the name comes back as "Coins" and not "k Coins".
+            local Previous = Start > 1 and string.sub(Plain, Start - 1, Start - 1) or ""
+            if string.find(Previous, "%d") then
+                Start += 1
+                while Start <= Finish
+                    and string.find(string.sub(Plain, Start, Start), "[%s'&%-]") do
+                    Start += 1
+                end
+            end
+            if Start <= Finish then
+                -- Trim trailing spaces and joiners so the name stops at the word.
+                local Piece = string.sub(Plain, Start, Finish)
+                local Clean = string.gsub(Piece, "[%s'&%-]+$", "")
+                Finish = Start + #Clean - 1
+                local Inside = false
+                for _, Span in ipairs(Brackets) do
+                    if Start >= Span.Start and Finish <= Span.Finish then
+                        Inside = true
+                        break
+                    end
+                end
+                if #Clean > 1 and not Inside then
+                    table.insert(Runs, {Start = Start, Finish = Finish})
+                end
+            end
+        end
+        return Runs
+    end
+
+    -- Resolve a mode + index down to a plain-text range to overwrite.
+    function Helper.Locate(Source, IsRich, Mode, Index)
+        local Plain, Map, Tokens = Helper.Project(Source, IsRich)
+        local Span
+        if Mode == "bracket" then
+            Span = Helper.BracketSpans(Plain)[Index]
+        elseif Mode == "name" then
+            Span = Helper.NameRuns(Plain)[Index]
+        elseif Mode == "segment" then
+            local Segments = Helper.Segments(Source, IsRich)
+            local Target = Segments[Index]
+            if Target then
+                local First, Last
+                for Position, Entry in ipairs(Map) do
+                    if Entry.Token == Target.TokenIndex then
+                        First = First or Position
+                        Last = Position
+                    end
+                end
+                if First then Span = {Start = First, Finish = Last} end
+            end
+        else
+            Span = Helper.NumberRuns(Plain, false)[Index]
+        end
+        if not Span then return nil, nil, Plain, Map, Tokens end
+        return Span.Start, Span.Finish, Plain, Map, Tokens
     end
 
     -- Text runs that carry visible content, with the font colour that is open
@@ -2473,31 +2624,119 @@ do
 
     -- Swap one whole segment, leaving its wrapper tags (and therefore its
     -- colour, stroke, size, and every other tag-driven style) untouched.
-    function Helper.ReplaceSegment(Source, IsRich, Index, NewValue)
-        local Segments, Tokens = Helper.Segments(Source, IsRich)
-        local Target = Segments[Index]
-        if not Target then
-            return Source, false
+    function Helper.ColorHex(Color)
+        if typeof(Color) ~= "Color3" then return "#FFFFFF" end
+        return string.format("#%02X%02X%02X",
+            math.floor(Color.R * 255 + 0.5),
+            math.floor(Color.G * 255 + 0.5),
+            math.floor(Color.B * 255 + 0.5))
+    end
+
+    -- Work out what the user almost certainly meant, so the common cases need
+    -- no configuration at all:
+    --   typed a number, label has numbers      -> edit the number
+    --   typed letters, label has [brackets]    -> edit the bracket contents
+    --   recolouring with no text typed         -> whatever the label offers
+    --   label has neither                      -> replace the whole thing
+    function Helper.ResolveAuto(Plain, Value, WantsColor)
+        local Text = tostring(Value or "")
+        local Numbers = #Helper.NumberRuns(Plain, false)
+        local Brackets = #Helper.BracketSpans(Plain)
+        local Names = #Helper.NameRuns(Plain)
+        local Typed = Text ~= ""
+        local TypedDigits = string.find(Text, "%d") ~= nil
+        -- A short letters-only value on a label that has a rank tag is almost
+        -- always meant for the tag ("S"), while a longer word is meant for the
+        -- name ("Power"). This is the only guess Auto makes that could go the
+        -- other way, and the What Do You Want To Change dropdown overrides it.
+        local ShortTag = #Text <= 3 and string.find(Text, "%s") == nil
+        if Typed and TypedDigits and Numbers > 0 then return "number" end
+        if Typed and not TypedDigits then
+            if Brackets > 0 and ShortTag then return "bracket" end
+            if Names > 0 then return "name" end
+            if Brackets > 0 then return "bracket" end
         end
-        Tokens[Target.TokenIndex].Value = NewValue
-        return Helper.Rebuild(Tokens), true
+        if WantsColor and not Typed then
+            if Brackets > 0 then return "bracket" end
+            if Numbers > 0 then return "number" end
+            if Names > 0 then return "name" end
+        end
+        if Numbers > 0 then return "number" end
+        if Brackets > 0 then return "bracket" end
+        if Names > 0 then return "name" end
+        return "whole"
     end
 
     -- Build what should be on screen, from whatever the label currently says.
     -- Recomputing from the LIVE string (instead of storing one fixed result)
     -- is what lets a locked edit keep working when the game re-renders the
     -- label with new colours or a new denominator.
+    --
+    -- Returns: Result, Ok, Note. Note is "convert" when the caller must turn
+    -- RichText on before writing, or a reason string when nothing matched.
     function Helper.Compose(Record, Source, IsRich)
+        local WantsColor = Record.UseColor == true
+        -- Colour needs markup. If the label is plain we have to switch
+        -- RichText on, which also means escaping the text we are keeping.
+        -- Once we have done that for a record we keep doing it, because the
+        -- game still writes plain strings to a label it thinks is plain.
+        local Convert = WantsColor and (not IsRich or Record.EnabledRich == true)
+        if Convert and not Record.AllowEnableRich then
+            return Source, false, "needsrich"
+        end
+        local ProjectRich = IsRich and not Convert
+
+        -- Resolve Auto against what this label actually contains.
+        local Mode = Record.Mode
+        if Mode == "auto" then
+            local Projection = Helper.Project(Source, ProjectRich)
+            Mode = Helper.ResolveAuto(Projection, Record.Value, WantsColor)
+        end
+        Record.ResolvedMode = Mode
+
+        -- Whole-text mode never needs to locate anything.
+        if Mode == "whole" then
+            local Value = Record.Value
+            if (ProjectRich or Convert) and not Record.InputIsRich then
+                Value = Helper.EscapeRich(Value)
+            end
+            if WantsColor then
+                Value = '<font color="' .. tostring(Record.ColorHex or "#FFFFFF")
+                    .. '">' .. Value .. "</font>"
+            end
+            return Value, true, Convert and "convert" or nil
+        end
+
+        local Start, Finish, Plain, Map, Tokens =
+            Helper.Locate(Source, ProjectRich, Mode, Record.Occurrence)
+        if not Start then return Source, false, "nomatch" end
+
         local Value = Record.Value
-        if IsRich and not Record.InputIsRich then
+        local Verbatim = Record.InputIsRich
+        if Value == "" and WantsColor then
+            -- Empty input plus a colour means "recolour this, leave the text".
+            Value = string.sub(Plain, Start, Finish)
+            Verbatim = false
+        end
+        if (ProjectRich or Convert) and not Verbatim then
             Value = Helper.EscapeRich(Value)
         end
-        if Record.Mode == "whole" then
-            return Value, true
-        elseif Record.Mode == "segment" then
-            return Helper.ReplaceSegment(Source, IsRich, Record.Occurrence, Value)
+        if WantsColor then
+            Value = '<font color="' .. tostring(Record.ColorHex or "#FFFFFF")
+                .. '">' .. Value .. "</font>"
         end
-        return Helper.ReplaceNumber(Source, IsRich, Record.Occurrence, Value)
+
+        if Convert then
+            -- Source is plain, so plain indices are source indices. Escape the
+            -- parts we are keeping, since they are about to be parsed as markup.
+            return Helper.EscapeRich(string.sub(Source, 1, Start - 1))
+                .. Value
+                .. Helper.EscapeRich(string.sub(Source, Finish + 1)), true, "convert"
+        end
+
+        local Result = Helper.Splice(Tokens, Map, Start, Finish, Value)
+        if not Result then return Source, false, "nomatch" end
+        return Result, true, nil
     end
 
     -- Read-only formatting report. Nothing in this module ever writes any of
@@ -2678,11 +2917,26 @@ do
         local Object = Record.Object
         if not Object then return false end
         local IsRich = Helper.IsRich(Object)
-        local Result, Ok = Helper.Compose(Record, Source, IsRich)
+        local Result, Ok, Note = Helper.Compose(Record, Source, IsRich)
         if not Ok then
-            -- No matching number/segment in the new string. Leave the game's
-            -- text alone rather than overwriting formatted markup blindly.
+            -- Nothing matched, or colour was asked for on a plain label with
+            -- the RichText opt-in switched off. Leave the game's text alone
+            -- rather than overwriting formatted markup blindly.
+            Record.LastNote = Note
             return false
+        end
+        Record.LastNote = nil
+        if Note == "convert" and not IsRich then
+            -- The one property other than .Text this module will ever write,
+            -- only when you have asked for a colour on a plain label, only
+            -- with the opt-in enabled, and it is put back on reset.
+            local Flipped = pcall(function() Object.RichText = true end)
+            if Flipped then
+                Record.EnabledRich = true
+                Record.RichTextWasEnabled = false
+            else
+                return false
+            end
         end
         return Helper.Write(Record, Result)
     end
@@ -2783,6 +3037,14 @@ do
             local Object = Record.Object
             if Object then
                 Record.Applying = true
+                -- Put RichText back the way we found it before restoring the
+                -- text, so a converted label goes back to plain rendering.
+                if Record.EnabledRich then
+                    pcall(function()
+                        Object.RichText = Record.RichTextWasEnabled == true
+                    end)
+                    Record.EnabledRich = false
+                end
                 -- RealText is the raw string the game last set, markup and
                 -- all, so restoring it cannot strip tags.
                 pcall(function() Object.Text = Record.RealText end)
@@ -2934,32 +3196,46 @@ do
                 .. Helper.Trim(Segment.Text, 24)
                 .. "  (" .. Segment.Color .. ")")
         end
+        -- Numbers and brackets are listed from the plain projection, which is
+        -- the same view the targeting uses, so the indices shown are the
+        -- indices you type into Target Number / Segment #.
+        local PlainProjection = Helper.Project(RealRaw, IsRich)
         local NumberList = {}
-        do
-            local Count = 0
-            for _, Token in ipairs(Helper.Tokenize(RealRaw, IsRich)) do
-                if Token.Kind == "text" then
-                    for _, Run in ipairs(Helper.NumberRuns(Token.Value, IsRich)) do
-                        Count += 1
-                        table.insert(NumberList, "#" .. Count .. "="
-                            .. string.sub(Token.Value, Run.Start, Run.Finish))
-                    end
-                end
-            end
+        for Index, Run in ipairs(Helper.NumberRuns(PlainProjection, false)) do
+            table.insert(NumberList, "#" .. Index .. "="
+                .. string.sub(PlainProjection, Run.Start, Run.Finish))
+        end
+        local BracketList = {}
+        for Index, Span in ipairs(Helper.BracketSpans(PlainProjection)) do
+            table.insert(BracketList, "#" .. Index .. "=["
+                .. string.sub(PlainProjection, Span.Start, Span.Finish) .. "]")
+        end
+        local NameList = {}
+        for Index, Span in ipairs(Helper.NameRuns(PlainProjection)) do
+            table.insert(NameList, "#" .. Index .. "="
+                .. string.sub(PlainProjection, Span.Start, Span.Finish))
         end
 
         -- Live preview of what Apply would produce with the current settings.
         local Preview = "(type a value first)"
-        if UIVisuals.PendingText ~= "" then
+        if UIVisuals.PendingText ~= "" or UIVisuals.UseColor then
             local Draft = {
                 Mode = UIVisuals.EditMode,
                 Value = UIVisuals.PendingText,
                 Occurrence = UIVisuals.TargetIndex,
-                InputIsRich = UIVisuals.InputIsRich
+                InputIsRich = UIVisuals.InputIsRich,
+                UseColor = UIVisuals.UseColor,
+                ColorHex = Helper.ColorHex(UIVisuals.EditColor),
+                AllowEnableRich = UIVisuals.AllowEnableRich
             }
-            local Result, Ok = Helper.Compose(Draft, RealRaw, IsRich)
-            Preview = Ok and Helper.Trim(Result, 90)
-                or "no match at index " .. tostring(UIVisuals.TargetIndex)
+            local Result, Ok, Note = Helper.Compose(Draft, RealRaw, IsRich)
+            if Ok then
+                Preview = Helper.Trim(Result, 110)
+            elseif Note == "needsrich" then
+                Preview = "plain label — enable \"Allow Enabling RichText\" to colour it"
+            else
+                Preview = "no match at index " .. tostring(UIVisuals.TargetIndex)
+            end
         end
 
         local GroupLine = "single label"
@@ -2983,9 +3259,19 @@ do
                     .. (#Breakdown > 0 and table.concat(Breakdown, "\n") or "  (none)")
                     .. "\nNumbers: "
                     .. (#NumberList > 0 and table.concat(NumberList, "  ") or "(none)")
+                    .. "\nBrackets: "
+                    .. (#BracketList > 0 and table.concat(BracketList, "  ") or "(none)")
+                    .. "\nNames: "
+                    .. (#NameList > 0 and table.concat(NameList, "  ") or "(none)")
                     .. "\nStat Group: " .. GroupLine
                     .. "\n\nMode: " .. UIVisuals.EditMode
                     .. "  Target #: " .. tostring(UIVisuals.TargetIndex)
+                    .. "\nColour: " .. (UIVisuals.UseColor
+                        and (Helper.ColorHex(UIVisuals.EditColor)
+                            .. (IsRich and "" or (UIVisuals.AllowEnableRich
+                                and " (will enable RichText)"
+                                or " (blocked: label is plain)")))
+                        or "off — existing colours kept")
                     .. "\nPreview: " .. Preview
                     .. "\nStatus: "
                     .. (Record and Record.Active
@@ -3259,9 +3545,17 @@ do
 
     function UIVisuals.SetEditMode(Mode)
         Mode = tostring(Mode or "")
-        if string.find(Mode, "Segment", 1, true) then
+        if string.find(Mode, "Auto", 1, true)
+            or string.find(Mode, "Figure", 1, true) then
+            UIVisuals.EditMode = "auto"
+        elseif string.find(Mode, "Bracket", 1, true) then
+            UIVisuals.EditMode = "bracket"
+        elseif string.find(Mode, "Name", 1, true) then
+            UIVisuals.EditMode = "name"
+        elseif string.find(Mode, "Segment", 1, true) then
             UIVisuals.EditMode = "segment"
-        elseif string.find(Mode, "Whole", 1, true) then
+        elseif string.find(Mode, "Everything", 1, true)
+            or string.find(Mode, "Whole", 1, true) then
             UIVisuals.EditMode = "whole"
         else
             UIVisuals.EditMode = "number"
@@ -3279,6 +3573,23 @@ do
         UIVisuals.UpdateSelectionInfo()
     end
 
+    function UIVisuals.SetUseColor(Value)
+        UIVisuals.UseColor = Value == true
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetEditColor(Color)
+        if typeof(Color) == "Color3" then
+            UIVisuals.EditColor = Color
+        end
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetAllowEnableRich(Value)
+        UIVisuals.AllowEnableRich = Value == true
+        UIVisuals.UpdateSelectionInfo()
+    end
+
     function UIVisuals.ApplySelected()
         local Entry = UIVisuals.SelectedKey
             and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
@@ -3287,7 +3598,9 @@ do
             return
         end
         local NewValue = UIVisuals.PendingText
-        if NewValue == "" then
+        -- An empty value plus a colour is a valid request: recolour this
+        -- piece, keep whatever it currently says.
+        if NewValue == "" and not UIVisuals.UseColor then
             Notify("UI Visuals", "Type something into Custom Display Text first.")
             return
         end
@@ -3325,6 +3638,9 @@ do
         Record.Mode = UIVisuals.EditMode
         Record.Occurrence = UIVisuals.TargetIndex
         Record.InputIsRich = UIVisuals.InputIsRich
+        Record.UseColor = UIVisuals.UseColor
+        Record.ColorHex = Helper.ColorHex(UIVisuals.EditColor)
+        Record.AllowEnableRich = UIVisuals.AllowEnableRich
         Record.Active = true
 
         if not Alive then
@@ -3341,11 +3657,26 @@ do
         Helper.Attach(Record, Object)
 
         -- Attach applies it; check whether the recipe actually matched.
-        local Ok, Current = pcall(function() return Object.Text end)
-        if Ok and Current == Record.RealText and Record.Mode ~= "whole" then
+        if Record.LastNote == "needsrich" then
             Notify("UI Visuals",
-                "No " .. (Record.Mode == "segment" and "segment" or "number")
-                .. " #" .. tostring(Record.Occurrence) .. " in that label.")
+                "That label is not RichText. Enable \"Allow Enabling RichText\" to colour it.")
+            LogWarning(
+                "UI Visuals colour refused: RichText disabled and opt-in off ("
+                .. Entry.Path .. ")",
+                "UI Visuals"
+            )
+        elseif Record.LastNote == "nomatch" then
+            local Resolved = Record.ResolvedMode or Record.Mode
+            local What = "number"
+            if Resolved == "segment" then
+                What = "segment"
+            elseif Resolved == "bracket" then
+                What = "[bracket]"
+            elseif Resolved == "name" then
+                What = "name"
+            end
+            Notify("UI Visuals",
+                "No " .. What .. " #" .. tostring(Record.Occurrence) .. " in that label.")
             LogWarning(
                 "UI Visuals apply matched nothing at index "
                 .. tostring(Record.Occurrence) .. " (" .. Entry.Path .. ")",
@@ -3421,6 +3752,195 @@ do
 
     function UIVisuals.SetIncludeHidden(Value)
         UIVisuals.IncludeHidden = Value == true
+    end
+
+    ----------------------------------------------------------------
+    -- Built-in self test
+    --
+    -- Runs the text engine against known inputs and known expected outputs.
+    -- Nothing in your game is touched: these are plain strings, not GUI
+    -- objects. Use it to confirm the feature is healthy in your executor
+    -- before trusting it on a real label.
+    ----------------------------------------------------------------
+    function UIVisuals.SelfTest()
+        local Blue = "#0000FF"
+        local Red = "#FF0000"
+        local Cases = {
+            {
+                Name = "plain number keeps prefix",
+                Source = "$2,450", Rich = false,
+                Mode = "number", Index = 1, Value = "999",
+                Expect = "$999"
+            },
+            {
+                Name = "rich number keeps font tags",
+                Source = '<font color="' .. Red .. '">25</font><font color="#FFFFFF"> / 100</font>',
+                Rich = true, Mode = "number", Index = 1, Value = "999",
+                Expect = '<font color="' .. Red .. '">999</font><font color="#FFFFFF"> / 100</font>'
+            },
+            {
+                Name = "second number targeted",
+                Source = '<font color="' .. Red .. '">25</font><font color="#FFFFFF"> / 100</font>',
+                Rich = true, Mode = "number", Index = 2, Value = "9999",
+                Expect = '<font color="' .. Red .. '">25</font><font color="#FFFFFF"> / 9999</font>'
+            },
+            {
+                Name = "decimal split by a tag is one number",
+                Source = 'Strength [<font color="' .. Blue .. '">A</font>]: 2876.48',
+                Rich = true, Mode = "number", Index = 1, Value = "1.5",
+                Expect = 'Strength [<font color="' .. Blue .. '">A</font>]: 1.5'
+            },
+            {
+                Name = "bracket contents across tags",
+                Source = 'Strength [<font color="' .. Blue .. '">A</font>]: 2876.48',
+                Rich = true, Mode = "bracket", Index = 1, Value = "S",
+                Expect = 'Strength [<font color="' .. Blue .. '">S</font>]: 2876.48'
+            },
+            {
+                Name = "auto picks bracket for a letter",
+                Source = 'Strength [A]: 2876.48', Rich = false,
+                Mode = "auto", Index = 1, Value = "S",
+                Expect = "Strength [S]: 2876.48"
+            },
+            {
+                Name = "auto picks number for digits",
+                Source = "Strength [A]: 2876.48", Rich = false,
+                Mode = "auto", Index = 1, Value = "9999",
+                Expect = "Strength [A]: 9999"
+            },
+            {
+                Name = "typed markup escaped on rich label",
+                Source = '<font color="' .. Red .. '">25</font>', Rich = true,
+                Mode = "number", Index = 1, Value = "<b>9</b>",
+                Expect = '<font color="' .. Red .. '">&lt;b&gt;9&lt;/b&gt;</font>'
+            },
+            {
+                Name = "colour wraps the edited piece",
+                Source = 'Strength [A]: 10', Rich = false,
+                Mode = "bracket", Index = 1, Value = "S", Color = Red, AllowRich = true,
+                Expect = 'Strength [<font color="' .. Red .. '">S</font>]: 10'
+            },
+            {
+                Name = "colour only keeps existing text",
+                Source = "Strength [A]: 10", Rich = false,
+                Mode = "bracket", Index = 1, Value = "", Color = Red, AllowRich = true,
+                Expect = 'Strength [<font color="' .. Red .. '">A</font>]: 10'
+            },
+            {
+                Name = "colour refused without the opt-in",
+                Source = "Strength [A]: 10", Rich = false,
+                Mode = "bracket", Index = 1, Value = "S", Color = Red, AllowRich = false,
+                ExpectFail = "needsrich"
+            },
+            {
+                Name = "missing target is refused",
+                Source = "No digits here", Rich = false,
+                Mode = "number", Index = 1, Value = "5",
+                ExpectFail = "nomatch"
+            },
+            {
+                Name = "name swapped, number kept",
+                Source = "Strength [A]: 2876.48", Rich = false,
+                Mode = "name", Index = 1, Value = "Power",
+                Expect = "Power [A]: 2876.48"
+            },
+            {
+                Name = "multi word name swapped",
+                Source = "Total Coins: 300", Rich = false,
+                Mode = "name", Index = 1, Value = "Cash",
+                Expect = "Cash: 300"
+            },
+            {
+                Name = "name inside font tag keeps the tag",
+                Source = '<font color="#00FF00">Coins</font>: 300', Rich = true,
+                Mode = "name", Index = 1, Value = "Gems",
+                Expect = '<font color="#00FF00">Gems</font>: 300'
+            },
+            {
+                Name = "unit suffix is not a name",
+                Source = "1.5k Coins", Rich = false,
+                Mode = "name", Index = 1, Value = "Gems",
+                Expect = "1.5k Gems"
+            },
+            {
+                Name = "auto picks name for a word",
+                Source = "Strength [A]: 2876.48", Rich = false,
+                Mode = "auto", Index = 1, Value = "Power",
+                Expect = "Power [A]: 2876.48"
+            },
+            {
+                Name = "auto still picks bracket for a short tag",
+                Source = "Strength [A]: 2876.48", Rich = false,
+                Mode = "auto", Index = 1, Value = "S",
+                Expect = "Strength [S]: 2876.48"
+            },
+            {
+                Name = "plain label leaves brackets alone",
+                Source = "Level 12", Rich = false,
+                Mode = "auto", Index = 1, Value = "100",
+                Expect = "Level 100"
+            }
+        }
+
+        local Passed, Failed = 0, 0
+        local Problems = {}
+        for _, Case in ipairs(Cases) do
+            local Record = {
+                Mode = Case.Mode,
+                Value = Case.Value,
+                Occurrence = Case.Index,
+                InputIsRich = false,
+                UseColor = Case.Color ~= nil,
+                ColorHex = Case.Color,
+                AllowEnableRich = Case.AllowRich == true
+            }
+            local Returned
+            local Ok = pcall(function()
+                Returned = table.pack(Helper.Compose(Record, Case.Source, Case.Rich))
+            end)
+            local Actual, Success, Reason
+            if Ok and Returned then
+                Actual, Success, Reason = Returned[1], Returned[2], Returned[3]
+            end
+            local Good
+            if not Ok then
+                Good = false
+                Reason = "error"
+            elseif Case.ExpectFail then
+                Good = (Success ~= true) and Reason == Case.ExpectFail
+            else
+                Good = (Success == true) and Actual == Case.Expect
+            end
+            if Good then
+                Passed += 1
+            else
+                Failed += 1
+                table.insert(Problems, Case.Name .. " → " .. tostring(Actual or Reason))
+            end
+        end
+
+        local Summary = tostring(Passed) .. " passed, " .. tostring(Failed) .. " failed"
+        if Failed == 0 then
+            LogSuccess("UI Visuals self test: " .. Summary, "UI Visuals")
+            Notify("UI Visuals Self Test", "All " .. tostring(Passed) .. " checks passed.")
+        else
+            LogError("UI Visuals self test: " .. Summary .. "\n"
+                .. table.concat(Problems, "\n"), "UI Visuals")
+            Notify("UI Visuals Self Test", Summary .. ". See executor output.")
+        end
+        if UIVisuals.InfoParagraph then
+            pcall(function()
+                UIVisuals.InfoParagraph:Set({
+                    Title = Failed == 0 and "🧪 Self Test Passed" or "🧪 Self Test Failed",
+                    Content = "Text engine: " .. Summary
+                        .. "\n\nThese checks run on plain strings only - nothing in your game"
+                        .. " was read or changed."
+                        .. (Failed > 0 and ("\n\n" .. table.concat(Problems, "\n")) or "")
+                        .. "\n\nSelect a UI element to go back to the normal view."
+                })
+            end)
+        end
+        return Failed == 0
     end
 
     ----------------------------------------------------------------
@@ -3505,7 +4025,7 @@ do
     })
     HomeTab:CreateParagraph({
         Title = "✅ Release Status",
-        Content = "Available • Rich text UI Visuals installed • Press " .. UIToggleKey.Name .. " to open or close"
+        Content = "Available • UI Visuals name editing installed • Press " .. UIToggleKey.Name .. " to open or close"
     })
     local SessionStart = os.clock()
     local FrameCount = 0
@@ -3648,6 +4168,41 @@ do
         end
     })
     HomeTab:CreateSection("📜 What's New")
+    HomeTab:CreateParagraph({
+        Title = "v3.2 • Edit Stat Names",
+        Content =
+            "• You can now change the stat NAME, not just the number"
+            .. "\n• Coins: 300 can become Gems: 300 without touching the value"
+            .. "\n• Multi-word names work, and names inside font tags keep their colour"
+            .. "\n• New plain-English picker: name, number, [bracket] letter, or everything"
+            .. "\n• Colour controls moved into the main flow so they are easy to find"
+            .. "\n• Instructions rewritten in simple language with worked examples"
+            .. "\n• Self Test grown to 19 checks"
+    })
+    HomeTab:CreateParagraph({
+        Title = "v3.1 • Simple UI Visuals",
+        Content =
+            "• UI Visuals is now a 3-step flow: Scan, pick, type, Apply"
+            .. "\n• New Auto edit mode picks number or [bracket] from what you type"
+            .. "\n• Keep Custom Text Applied is on by default so edits stick"
+            .. "\n• Step-by-step instructions built into the Visuals tab"
+            .. "\n• Advanced options moved into their own clearly-labelled section"
+            .. "\n• Added 🧪 Run Self Test: 13 engine checks, touches nothing in your game"
+            .. "\n• Clearer wording on every control and every failure message"
+    })
+    HomeTab:CreateParagraph({
+        Title = "v3.0 • Bracket Tags & Colour",
+        Content =
+            "• New Replace [Bracket] Contents mode for rank tags like Strength [A]"
+            .. "\n• Also Set Colour recolours the piece you edit with a colour picker"
+            .. "\n• Leave the text box empty to recolour a piece without changing it"
+            .. "\n• Colouring a plain label turns RichText on, and reset turns it back off"
+            .. "\n• Targeting now runs on a rendered-text projection of the label"
+            .. "\n• Values split across tags are matched correctly, so 2876.48 is one number"
+            .. "\n• Brackets are found even when the letter sits inside its own font tag"
+            .. "\n• Selection card lists numbers and brackets by index, with a live preview"
+            .. "\n• Clearer messages when a target index or colour request cannot be applied"
+    })
     HomeTab:CreateParagraph({
         Title = "v2.9 • Rich Text & Formatting",
         Content =
@@ -4355,18 +4910,27 @@ do
     --==========================================================
     VisualsTab:CreateSection("🖥️ UI Visuals")
     VisualsTab:CreateParagraph({
-        Title = "🖥️ UI Visuals",
+        Title = "📖 How To Use",
         Content =
-            "Changes the text shown in your own PlayerGui and nothing else."
-            .. "\n\nScan, pick a label, type a value, then Apply. This writes to the"
-            .. " .Text of a GuiObject on your screen only — it does not touch server"
-            .. " data, leaderstats, or RemoteEvents, and it gives you nothing in game."
-            .. " Other players and the server still see your real values."
-            .. "\n\nFormatting is preserved. Colours, fonts, sizes, strokes, gradients"
-            .. " and transparency are never written to at all, and on a RichText label"
-            .. " only the number or segment you target is swapped — the <font> tags"
-            .. " around it are copied through untouched. Labels marked 🎨 use RichText;"
-            .. " labels marked ⛓ are one part of a stat built from several TextLabels."
+            "This changes words and numbers on your own screen."
+            .. "\n\n1. Press 🔎 Scan / Refresh UI."
+            .. "\n2. Find your stat in Select UI Text. Type a word into Search UI"
+            .. " to look for it, like coins or level."
+            .. "\n3. Pick what you want to change: the name, the number, or the"
+            .. " letter in brackets."
+            .. "\n4. Type the new word or number in Custom Display Text."
+            .. "\n5. Press ✅ Apply."
+            .. "\n\nWant it a different colour too? Turn on 🖌️ Also Set Colour and pick"
+            .. " a colour before you press Apply. Leave Custom Display Text empty if you"
+            .. " only want to change the colour."
+            .. "\n\nExample: a stat says Coins: 300"
+            .. "\n  Change The Name + type Gems  →  Gems: 300"
+            .. "\n  Change The Number + type 999  →  Coins: 999"
+            .. "\n\nMade a mistake? Press ↩ Reset Selected to put one back, or"
+            .. " ♻ Reset All to put everything back. Closing BananiHub also puts"
+            .. " everything back."
+            .. "\n\nThis is only pretend. Your real coins do not change, and nobody"
+            .. " else can see it."
     })
     Runtime.UIVisuals.GameParagraph = VisualsTab:CreateParagraph({
         Title = "🎮 Game Information",
@@ -4374,18 +4938,19 @@ do
             "Game: " .. tostring(PlaceInfo.Name)
             .. "\nPlaceId: " .. tostring(game.PlaceId)
             .. "\nDetected UI Text Elements: 0"
+            .. "\nMulti-Label Stat Groups: 0"
             .. "\nShown In Dropdown: 0"
             .. "\nActive UI Edits: 0"
             .. "\nLast Scan: never"
     })
+
+    -- ---------- Step 1 ----------
     VisualsTab:CreateButton({
         Name = "🔎 Scan / Refresh UI",
         Callback = function() Runtime.UIVisuals.Scan() end
     })
-    VisualsTab:CreateToggle({
-        Name = "👻 Include Hidden / Empty Text", Flag = "UIVisuals_IncludeHidden", CurrentValue = false,
-        Callback = function(Value) Runtime.UIVisuals.SetIncludeHidden(Value) end
-    })
+
+    -- ---------- Step 2 ----------
     VisualsTab:CreateInput({
         Name = "Search UI",
         PlaceholderText = "cash, coins, level, wins... (blank = show all)",
@@ -4406,46 +4971,46 @@ do
         Title = "🎯 Selected UI",
         Content = "Nothing selected. Scan, then pick something from Select UI Text."
     })
-    VisualsTab:CreateButton({
-        Name = "🔗 Isolate / Release Stat Group",
-        Callback = function() Runtime.UIVisuals.ToggleGroupIsolation() end
-    })
+
+    -- ---------- Step 3 ----------
     VisualsTab:CreateDropdown({
-        Name = "Edit Mode",
+        Name = "What Do You Want To Change?",
         Options = {
-            "Replace Number Only (keeps formatting)",
-            "Replace Segment (keeps surrounding tags)",
-            "Replace Whole Text (plain overwrite)"
+            "Figure It Out For Me",
+            "The Name (the word)",
+            "The Number",
+            "The Letter In [Brackets]",
+            "Everything (whole label)"
         },
-        CurrentOption = {"Replace Number Only (keeps formatting)"},
+        CurrentOption = {"Figure It Out For Me"},
         Flag = "UIVisuals_EditMode",
         Callback = function(Option)
             local Mode = type(Option) == "table" and Option[1] or Option
             Runtime.UIVisuals.SetEditMode(Mode)
         end
     })
-    VisualsTab:CreateSlider({
-        Name = "Target Number / Segment #", Flag = "UIVisuals_TargetIndex",
-        Range = {1, 12}, Increment = 1, CurrentValue = 1,
-        Callback = function(Value) Runtime.UIVisuals.SetTargetIndex(Value) end
-    })
+
+    -- ---------- Step 4 ----------
     VisualsTab:CreateInput({
         Name = "Custom Display Text",
-        PlaceholderText = "Example: 999999999 or $999,999,999",
+        PlaceholderText = "Type the new word or number here",
         RemoveTextAfterFocusLost = false,
         Callback = function(Text) Runtime.UIVisuals.SetPendingText(Text) end
     })
+
+    -- ---------- Step 5 (optional) ----------
     VisualsTab:CreateToggle({
-        Name = "🎨 My Input Contains RichText Tags", Flag = "UIVisuals_InputIsRich", CurrentValue = false,
-        Callback = function(Value) Runtime.UIVisuals.SetInputIsRich(Value) end
+        Name = "🖌️ Also Set Colour", Flag = "UIVisuals_UseColor", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetUseColor(Value) end
+    })
+    VisualsTab:CreateColorPicker({
+        Name = "Pick A Colour", Flag = "UIVisuals_EditColor",
+        Color = Color3.fromRGB(80, 140, 255),
+        Callback = function(Color) Runtime.UIVisuals.SetEditColor(Color) end
     })
     VisualsTab:CreateButton({
         Name = "✅ Apply To Selected",
         Callback = function() Runtime.UIVisuals.ApplySelected() end
-    })
-    VisualsTab:CreateToggle({
-        Name = "🔒 Keep Custom Text Applied", Flag = "UIVisuals_KeepApplied", CurrentValue = false,
-        Callback = function(Value) Runtime.UIVisuals.SetKeepApplied(Value) end
     })
     VisualsTab:CreateButton({
         Name = "↩ Reset Selected",
@@ -4454,6 +5019,58 @@ do
     VisualsTab:CreateButton({
         Name = "♻ Reset All UI Edits",
         Callback = function() Runtime.UIVisuals.ResetAll(false) end
+    })
+
+    --==========================================================
+    -- UI VISUALS • ADVANCED
+    -- Nothing below here is needed for the normal flow above.
+    --==========================================================
+    VisualsTab:CreateSection("🔧 UI Visuals • Advanced")
+    VisualsTab:CreateParagraph({
+        Title = "🔧 Advanced Options",
+        Content =
+            "You do not need any of this. It is here for tricky labels."
+            .. "\n\n• Keep Custom Text Applied (already on) puts your text back when"
+            .. " the game changes the label. Turn it off if something flickers."
+            .. "\n• Target Number / Name # is for labels with more than one of the"
+            .. " same thing, like 25 / 100. Set it to 2 to change the second one."
+            .. "\n• Allow Enabling RichText lets colours work on labels that have"
+            .. " never used colour before. Leave it on."
+            .. "\n• My Input Contains RichText Tags is for typing your own <font> tags."
+            .. "\n• Isolate Stat Group is for stats split across several labels,"
+            .. " marked ⛓ in the list."
+            .. "\n• Include Hidden shows labels that are currently off screen."
+            .. "\n• Run Self Test checks that everything works. It does not read or"
+            .. " change anything in your game."
+    })
+    VisualsTab:CreateToggle({
+        Name = "🔒 Keep Custom Text Applied", Flag = "UIVisuals_KeepApplied", CurrentValue = true,
+        Callback = function(Value) Runtime.UIVisuals.SetKeepApplied(Value) end
+    })
+    VisualsTab:CreateSlider({
+        Name = "Target Number / Name # (leave at 1)", Flag = "UIVisuals_TargetIndex",
+        Range = {1, 12}, Increment = 1, CurrentValue = 1,
+        Callback = function(Value) Runtime.UIVisuals.SetTargetIndex(Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "Allow Enabling RichText", Flag = "UIVisuals_AllowEnableRich", CurrentValue = true,
+        Callback = function(Value) Runtime.UIVisuals.SetAllowEnableRich(Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "🎨 My Input Contains RichText Tags", Flag = "UIVisuals_InputIsRich", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetInputIsRich(Value) end
+    })
+    VisualsTab:CreateButton({
+        Name = "🔗 Isolate / Release Stat Group",
+        Callback = function() Runtime.UIVisuals.ToggleGroupIsolation() end
+    })
+    VisualsTab:CreateToggle({
+        Name = "👻 Include Hidden / Empty Text", Flag = "UIVisuals_IncludeHidden", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetIncludeHidden(Value) end
+    })
+    VisualsTab:CreateButton({
+        Name = "🧪 Run Self Test",
+        Callback = function() Runtime.UIVisuals.SelfTest() end
     })
 end
 --==============================================================
@@ -4807,7 +5424,7 @@ do
         ["Freecam"] = "Open Camera > Freecam Controls. WASD to move, Q/E down/up, hold right-click to look.",
         ["Box ESP"] = "Draws a box around visible player characters.",
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
-        ["UI Visuals"] = "Visuals > UI Visuals. Press Scan / Refresh UI to list the TextLabels, TextButtons, and TextBoxes in your PlayerGui, with currency and stat labels ranked first. Search filters the full list. Pick one from Select UI Text, choose an Edit Mode, type into Custom Display Text, then Apply. Replace Number Only swaps a single value and leaves the rest of the label, including RichText font tags, exactly as it was, so a red 25 in a 25 / 100 health label becomes a red 999 with the white / 100 intact; use Target Number / Segment # to pick which value changes. Replace Segment swaps one coloured run and keeps its wrapper tags. Replace Whole Text is a plain overwrite. Colours, fonts, sizes, strokes, gradients and transparency are never written to at all. Labels tagged with a palette use RichText; labels tagged with a chain are one piece of a stat built from several neighbouring TextLabels, and Isolate Stat Group narrows the list to just those pieces. Keep Custom Text Applied re-applies your value into whatever markup the game renders next, and edits survive the label being destroyed and rebuilt. Reset restores the game's newest real text with its tags. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
+        ["UI Visuals"] = "Visuals > UI Visuals changes words and numbers on your own screen. Press Scan / Refresh UI, find your stat in Select UI Text using Search UI, choose what you want to change, type the new word or number into Custom Display Text, and press Apply. What Do You Want To Change lets you pick The Name, The Number, The Letter In [Brackets], or Everything, and Figure It Out For Me guesses from what you type: digits change the number, a short letter changes the bracket tag, and a word changes the name. So Coins: 300 becomes Gems: 300 or Coins: 999 depending on what you type. Colours, fonts and styling are always kept. To recolour, turn on Also Set Colour and pick a colour before pressing Apply, and leave Custom Display Text empty if you only want the colour to change. Reset Selected puts one label back, Reset All puts everything back, and unloading BananiHub also puts everything back. Advanced holds the target number for labels with more than one value like 25 / 100, the RichText options, stat group isolation, and a Self Test that checks the feature works without reading anything from your game. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
         ["Performance Mode"] = "Visuals > Performance. Disables particles, post-processing, shadows, and complex materials. Turning it off restores visuals."
     }
     local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "UI Visuals", "Performance Mode"}
