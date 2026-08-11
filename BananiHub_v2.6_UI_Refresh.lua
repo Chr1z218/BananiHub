@@ -1,5 +1,5 @@
 -- ==========================================================
--- 🍌 BANANIHUB v3.2 • EDIT STAT NAMES 🍌
+-- 🍌 BANANIHUB v3.4 • GAME COLOUR PALETTE 🍌
 -- Release status: Available
 -- L = Open / Close
 -- ==========================================================
@@ -32,7 +32,7 @@ local PlaceInfo = {
     Creator = "Loading...",
     IconImageAssetId = 0
 }
-local BANANIHUB_VERSION = "3.2"
+local BANANIHUB_VERSION = "3.4"
 local UIToggleKey = Enum.KeyCode.L
 --==============================================================
 -- HUB GUI TRACKER
@@ -2160,6 +2160,13 @@ do
         InputIsRich = false, -- treat the typed value as raw RichText markup
         UseColor = false,    -- wrap the edited piece in a <font color> tag
         EditColor = Color3.fromRGB(80, 140, 255),
+        ColorHexInput = "",  -- typed hex, overrides the picker when valid
+        MatchGameColor = false, -- reuse the colour the game gives this piece
+        Palette = {},        -- every font colour found in this game's UI
+        PaletteDropdown = nil,
+        PaletteNone = "(use my own colour)",
+        Bold = false, Italic = false, Underline = false, Strike = false,
+        SizeOverride = 0,    -- 0 = leave the label's own text size alone
         AllowEnableRich = true, -- may turn RichText on to colour a plain label
         EditMode = "auto",   -- "auto" | "number" | "bracket" | "segment" | "whole"
         TargetIndex = 1,     -- which number / which segment
@@ -2632,6 +2639,174 @@ do
             math.floor(Color.B * 255 + 0.5))
     end
 
+    -- Accept "#FF00FF", "FF00FF", or "ff00ff" from the hex box.
+    function Helper.ParseHex(Text)
+        Text = tostring(Text or ""):gsub("%s", "")
+        if Text == "" then return nil end
+        local Digits = string.match(Text, "^#?(%x%x%x%x%x%x)$")
+        if not Digits then return nil end
+        return "#" .. string.upper(Digits)
+    end
+
+    -- The font colour that is open over each token, so we can tell what colour
+    -- a piece of text is SUPPOSED to be in the game.
+    function Helper.TokenColors(Tokens)
+        local Colors = {}
+        local Stack = {}
+        for Index, Token in ipairs(Tokens) do
+            if Token.Kind == "tag" then
+                local Lower = string.lower(Token.Value)
+                if string.find(Lower, "^</font") then
+                    if #Stack > 0 then table.remove(Stack) end
+                elseif string.find(Lower, "^<font") then
+                    local Color = string.match(Token.Value, 'color%s*=%s*"([^"]*)"')
+                        or string.match(Token.Value, "color%s*=%s*'([^']*)'")
+                    table.insert(Stack, Color or false)
+                end
+            end
+            Colors[Index] = Stack[#Stack] or nil
+        end
+        return Colors
+    end
+
+    -- The colour the game gives this exact piece: its font tag if it has one,
+    -- otherwise the label's own TextColor3.
+    function Helper.ColorOfSpan(Tokens, Map, PlainStart, Object)
+        local Entry = Map[PlainStart]
+        if Entry then
+            local Tagged = Helper.TokenColors(Tokens)[Entry.Token]
+            if Tagged then return Helper.ParseHex(Tagged) or Tagged end
+        end
+        if Object then
+            local Ok, Color = pcall(function() return Object.TextColor3 end)
+            if Ok and Color then return Helper.ColorHex(Color) end
+        end
+        return nil
+    end
+
+    -- Nearest everyday name for a colour, so the palette reads as
+    -- "red" rather than only "#E81123".
+    function Helper.ColorName(Hex)
+        local Named = {
+            {"black", 0, 0, 0}, {"white", 255, 255, 255},
+            {"grey", 128, 128, 128}, {"silver", 200, 200, 200},
+            {"red", 255, 0, 0}, {"dark red", 140, 0, 0},
+            {"orange", 255, 140, 0}, {"gold", 255, 200, 0},
+            {"yellow", 255, 255, 0}, {"lime", 120, 255, 0},
+            {"green", 0, 200, 0}, {"dark green", 0, 110, 0},
+            {"teal", 0, 180, 180}, {"cyan", 0, 255, 255},
+            {"blue", 0, 90, 255}, {"dark blue", 0, 0, 150},
+            {"purple", 150, 0, 220}, {"pink", 255, 105, 180},
+            {"magenta", 255, 0, 255}, {"brown", 130, 80, 40}
+        }
+        local Digits = string.match(tostring(Hex or ""), "^#(%x%x%x%x%x%x)$")
+        if not Digits then return "colour" end
+        local Red = tonumber(string.sub(Digits, 1, 2), 16) or 0
+        local Green = tonumber(string.sub(Digits, 3, 4), 16) or 0
+        local Blue = tonumber(string.sub(Digits, 5, 6), 16) or 0
+        local Best, BestDistance = "colour", math.huge
+        for _, Entry in ipairs(Named) do
+            local Distance = (Red - Entry[2]) ^ 2
+                + (Green - Entry[3]) ^ 2
+                + (Blue - Entry[4]) ^ 2
+            if Distance < BestDistance then
+                BestDistance = Distance
+                Best = Entry[1]
+            end
+        end
+        return Best
+    end
+
+    -- Every colour one label uses: the colours in its font tags, plus its own
+    -- TextColor3 for the text that has no tag of its own.
+    function Helper.CollectColors(Entry, Sink)
+        local function Add(Hex, Sample)
+            Hex = Helper.ParseHex(Hex)
+            if not Hex then return end
+            local Bucket = Sink[Hex]
+            if not Bucket then
+                Bucket = {Hex = Hex, Count = 0, Sample = Sample}
+                Sink[Hex] = Bucket
+            end
+            Bucket.Count += 1
+            if (not Bucket.Sample or Bucket.Sample == "") and Sample then
+                Bucket.Sample = Sample
+            end
+        end
+        local Sample = Helper.Trim(Entry.PlainText, 18)
+        if Entry.IsRich then
+            for _, Token in ipairs(Helper.Tokenize(Entry.Text, true)) do
+                if Token.Kind == "tag"
+                    and string.find(string.lower(Token.Value), "^<font") then
+                    local Color = string.match(Token.Value, 'color%s*=%s*"([^"]*)"')
+                        or string.match(Token.Value, "color%s*=%s*'([^']*)'")
+                    if Color then Add(Color, Sample) end
+                end
+            end
+        end
+        if Entry.Object then
+            local Ok, Color = pcall(function() return Entry.Object.TextColor3 end)
+            if Ok and Color then Add(Helper.ColorHex(Color), Sample) end
+        end
+    end
+
+    -- Wrap a value in the styling the user asked for. Font attributes go in
+    -- one tag; bold/italic/underline/strike nest inside it.
+    function Helper.WrapStyle(Payload, Style)
+        local Attributes = {}
+        if Style.ColorHex then
+            table.insert(Attributes, 'color="' .. Style.ColorHex .. '"')
+        end
+        if Style.Size and Style.Size > 0 then
+            table.insert(Attributes, 'size="' .. tostring(math.floor(Style.Size)) .. '"')
+        end
+        if Style.Face and Style.Face ~= "" then
+            table.insert(Attributes, 'face="' .. Style.Face .. '"')
+        end
+        local Inner = Payload
+        if Style.Strike then Inner = "<s>" .. Inner .. "</s>" end
+        if Style.Underline then Inner = "<u>" .. Inner .. "</u>" end
+        if Style.Italic then Inner = "<i>" .. Inner .. "</i>" end
+        if Style.Bold then Inner = "<b>" .. Inner .. "</b>" end
+        if #Attributes > 0 then
+            Inner = "<font " .. table.concat(Attributes, " ") .. ">"
+                .. Inner .. "</font>"
+        end
+        return Inner
+    end
+
+    -- True when the target span is exactly one text token wrapped by its own
+    -- <font ...> pair. In that case we rewrite THAT tag's colour instead of
+    -- nesting a second one inside it, which keeps the markup as clean as the
+    -- game wrote it.
+    function Helper.WrappingFontTag(Tokens, Map, PlainStart, PlainFinish)
+        local First, Last = Map[PlainStart], Map[PlainFinish]
+        if not First or not Last then return nil end
+        if First.Token ~= Last.Token then return nil end
+        local Index = First.Token
+        local Token = Tokens[Index]
+        if First.Start ~= 1 or Last.Finish ~= #Token.Value then return nil end
+        local Open, Close = Tokens[Index - 1], Tokens[Index + 1]
+        if not Open or not Close then return nil end
+        if Open.Kind ~= "tag" or Close.Kind ~= "tag" then return nil end
+        if not string.find(string.lower(Open.Value), "^<font") then return nil end
+        if not string.find(string.lower(Close.Value), "^</font") then return nil end
+        return Index - 1, Index
+    end
+
+    -- Set or replace one attribute inside an existing <font> tag.
+    function Helper.SetFontAttribute(Tag, Name, Value)
+        local Pattern = Name .. '%s*=%s*"[^"]*"'
+        if string.find(Tag, Pattern) then
+            return (string.gsub(Tag, Pattern, Name .. '="' .. Value .. '"', 1))
+        end
+        Pattern = Name .. "%s*=%s*'[^']*'"
+        if string.find(Tag, Pattern) then
+            return (string.gsub(Tag, Pattern, Name .. '="' .. Value .. '"', 1))
+        end
+        return (string.gsub(Tag, "%s*>$", " " .. Name .. '="' .. Value .. '">', 1))
+    end
+
     -- Work out what the user almost certainly meant, so the common cases need
     -- no configuration at all:
     --   typed a number, label has numbers      -> edit the number
@@ -2674,68 +2849,202 @@ do
     --
     -- Returns: Result, Ok, Note. Note is "convert" when the caller must turn
     -- RichText on before writing, or a reason string when nothing matched.
-    function Helper.Compose(Record, Source, IsRich)
-        local WantsColor = Record.UseColor == true
-        -- Colour needs markup. If the label is plain we have to switch
-        -- RichText on, which also means escaping the text we are keeping.
+    -- One entry in a record's edit list, keyed so re-applying the same target
+    -- updates it instead of adding a duplicate.
+    function Helper.PartKey(Mode, Occurrence)
+        return tostring(Mode) .. "#" .. tostring(Occurrence)
+    end
+
+    function Helper.PartIsStyled(Part)
+        return Part.UseColor == true or Part.Bold == true or Part.Italic == true
+            or Part.Underline == true or Part.Strike == true
+            or (tonumber(Part.Size) or 0) > 0
+    end
+
+    -- Find a plain-text span for one target, on a projection we already have.
+    function Helper.SpanOn(Plain, Mode, Index, Source, IsRich, Map)
+        if Mode == "bracket" then
+            return Helper.BracketSpans(Plain)[Index]
+        elseif Mode == "name" then
+            return Helper.NameRuns(Plain)[Index]
+        elseif Mode == "segment" then
+            local Target = Helper.Segments(Source, IsRich)[Index]
+            if not Target then return nil end
+            local First, Last
+            for Position, Entry in ipairs(Map) do
+                if Entry.Token == Target.TokenIndex then
+                    First = First or Position
+                    Last = Position
+                end
+            end
+            if not First then return nil end
+            return {Start = First, Finish = Last}
+        end
+        return Helper.NumberRuns(Plain, false)[Index]
+    end
+
+    -- Build what should be on screen, from whatever the label currently says.
+    --
+    -- A record holds a LIST of edits, so you can change the name, then the
+    -- number, then the bracket letter on the same label and keep all three.
+    -- Every edit is re-resolved against the live text on each pass, which is
+    -- what lets them all survive the game re-rendering the label.
+    --
+    -- Returns: Result, Ok, Note. Note is "convert" when the caller must turn
+    -- RichText on before writing, or a reason string when nothing applied.
+    function Helper.Compose(Record, Source, IsRich, Object)
+        local Changes = Record.Changes or {}
+        if #Changes == 0 then return Source, false, "noparts" end
+
+        -- Any styled edit needs markup. If the label is plain we have to
+        -- switch RichText on, which also means escaping the text we keep.
         -- Once we have done that for a record we keep doing it, because the
         -- game still writes plain strings to a label it thinks is plain.
-        local Convert = WantsColor and (not IsRich or Record.EnabledRich == true)
+        local WantsStyle = false
+        for _, Part in ipairs(Changes) do
+            if Helper.PartIsStyled(Part) then WantsStyle = true break end
+        end
+        local Convert = WantsStyle and (not IsRich or Record.EnabledRich == true)
         if Convert and not Record.AllowEnableRich then
             return Source, false, "needsrich"
         end
         local ProjectRich = IsRich and not Convert
 
-        -- Resolve Auto against what this label actually contains.
-        local Mode = Record.Mode
-        if Mode == "auto" then
-            local Projection = Helper.Project(Source, ProjectRich)
-            Mode = Helper.ResolveAuto(Projection, Record.Value, WantsColor)
-        end
-        Record.ResolvedMode = Mode
+        local Plain, Map, Tokens = Helper.Project(Source, ProjectRich)
 
-        -- Whole-text mode never needs to locate anything.
-        if Mode == "whole" then
-            local Value = Record.Value
-            if (ProjectRich or Convert) and not Record.InputIsRich then
+        -- Resolve every edit to a span first, so we can order them and spot
+        -- overlaps before touching anything.
+        local Planned = {}
+        local WholePart = nil
+        local Missed = 0
+        for _, Part in ipairs(Changes) do
+            local Styled = Helper.PartIsStyled(Part)
+            local Mode = Part.Mode
+            if Mode == "auto" then
+                Mode = Helper.ResolveAuto(Plain, Part.Value, Styled)
+            end
+            Part.ResolvedMode = Mode
+            if Mode == "whole" then
+                WholePart = Part
+            else
+                local Span = Helper.SpanOn(Plain, Mode, Part.Occurrence, Source, ProjectRich, Map)
+                if Span then
+                    table.insert(Planned, {Part = Part, Span = Span, Styled = Styled})
+                else
+                    Missed += 1
+                end
+            end
+        end
+
+        -- Turn one edit into the exact string that replaces its span.
+        local function Payload(Part, Span, Styled)
+            local Value = Part.Value
+            local Verbatim = Part.InputIsRich
+            if Value == "" then
+                -- Empty text means "restyle this, keep what it says".
+                Value = string.sub(Plain, Span.Start, Span.Finish)
+                Verbatim = false
+            end
+            if (ProjectRich or Convert) and not Verbatim then
                 Value = Helper.EscapeRich(Value)
             end
-            if WantsColor then
-                Value = '<font color="' .. tostring(Record.ColorHex or "#FFFFFF")
-                    .. '">' .. Value .. "</font>"
+            if not Styled then return Value, false end
+            local Color = Part.ColorHex
+            if Part.MatchGameColor then
+                Color = Helper.ColorOfSpan(Tokens, Map, Span.Start, Object) or Color
+            end
+            if not Part.UseColor then Color = nil end
+            return Helper.WrapStyle(Value, {
+                ColorHex = Color,
+                Size = tonumber(Part.Size) or 0,
+                Bold = Part.Bold, Italic = Part.Italic,
+                Underline = Part.Underline, Strike = Part.Strike
+            }), true, Color
+        end
+
+        -- A whole-label edit replaces everything, so nothing else can apply.
+        if WholePart then
+            local Styled = Helper.PartIsStyled(WholePart)
+            local Value = WholePart.Value
+            if (ProjectRich or Convert) and not WholePart.InputIsRich then
+                Value = Helper.EscapeRich(Value)
+            end
+            if Styled then
+                local Color = WholePart.UseColor and WholePart.ColorHex or nil
+                Value = Helper.WrapStyle(Value, {
+                    ColorHex = Color,
+                    Size = tonumber(WholePart.Size) or 0,
+                    Bold = WholePart.Bold, Italic = WholePart.Italic,
+                    Underline = WholePart.Underline, Strike = WholePart.Strike
+                })
             end
             return Value, true, Convert and "convert" or nil
         end
 
-        local Start, Finish, Plain, Map, Tokens =
-            Helper.Locate(Source, ProjectRich, Mode, Record.Occurrence)
-        if not Start then return Source, false, "nomatch" end
+        if #Planned == 0 then return Source, false, "nomatch" end
 
-        local Value = Record.Value
-        local Verbatim = Record.InputIsRich
-        if Value == "" and WantsColor then
-            -- Empty input plus a colour means "recolour this, leave the text".
-            Value = string.sub(Plain, Start, Finish)
-            Verbatim = false
+        table.sort(Planned, function(A, B) return A.Span.Start < B.Span.Start end)
+        -- Drop anything that collides with an edit we already accepted, so two
+        -- targets can never scribble over each other.
+        local Accepted = {}
+        local Reach = 0
+        local Overlaps = 0
+        for _, Item in ipairs(Planned) do
+            if Item.Span.Start > Reach then
+                table.insert(Accepted, Item)
+                Reach = Item.Span.Finish
+            else
+                Overlaps += 1
+            end
         end
-        if (ProjectRich or Convert) and not Verbatim then
-            Value = Helper.EscapeRich(Value)
-        end
-        if WantsColor then
-            Value = '<font color="' .. tostring(Record.ColorHex or "#FFFFFF")
-                .. '">' .. Value .. "</font>"
-        end
+        Record.LastSkipped = Missed + Overlaps
 
         if Convert then
             -- Source is plain, so plain indices are source indices. Escape the
-            -- parts we are keeping, since they are about to be parsed as markup.
-            return Helper.EscapeRich(string.sub(Source, 1, Start - 1))
-                .. Value
-                .. Helper.EscapeRich(string.sub(Source, Finish + 1)), true, "convert"
+            -- parts we keep, since they are about to be parsed as markup.
+            local Pieces = {}
+            local Cursor = 1
+            for _, Item in ipairs(Accepted) do
+                table.insert(Pieces,
+                    Helper.EscapeRich(string.sub(Source, Cursor, Item.Span.Start - 1)))
+                table.insert(Pieces, (Payload(Item.Part, Item.Span, Item.Styled)))
+                Cursor = Item.Span.Finish + 1
+            end
+            table.insert(Pieces, Helper.EscapeRich(string.sub(Source, Cursor)))
+            return table.concat(Pieces), true, "convert"
         end
 
-        local Result = Helper.Splice(Tokens, Map, Start, Finish, Value)
-        if not Result then return Source, false, "nomatch" end
+        -- Splice right to left so earlier spans keep their positions.
+        local Result = Source
+        for Index = #Accepted, 1, -1 do
+            local Item = Accepted[Index]
+            local Text, Styled, Color = Payload(Item.Part, Item.Span, Item.Styled)
+            local Written = false
+            if Styled and Color then
+                -- If this span is already wrapped in its own <font> tag, edit
+                -- THAT tag's colour rather than nesting a second one inside
+                -- it. Keeps the markup exactly as tidy as the game wrote it.
+                local TagIndex, TextIndex =
+                    Helper.WrappingFontTag(Tokens, Map, Item.Span.Start, Item.Span.Finish)
+                if TagIndex then
+                    local Plainer = select(1, Payload(Item.Part, Item.Span, false))
+                    local OnlyColour = not (Item.Part.Bold or Item.Part.Italic
+                        or Item.Part.Underline or Item.Part.Strike
+                        or (tonumber(Item.Part.Size) or 0) > 0)
+                    if OnlyColour then
+                        Tokens[TagIndex].Value =
+                            Helper.SetFontAttribute(Tokens[TagIndex].Value, "color", Color)
+                        Tokens[TextIndex].Value = Plainer
+                        Result = Helper.Rebuild(Tokens)
+                        Written = true
+                    end
+                end
+            end
+            if not Written then
+                local Spliced = Helper.Splice(Tokens, Map, Item.Span.Start, Item.Span.Finish, Text)
+                if Spliced then Result = Spliced end
+            end
+        end
         return Result, true, nil
     end
 
@@ -2917,7 +3226,7 @@ do
         local Object = Record.Object
         if not Object then return false end
         local IsRich = Helper.IsRich(Object)
-        local Result, Ok, Note = Helper.Compose(Record, Source, IsRich)
+        local Result, Ok, Note = Helper.Compose(Record, Source, IsRich, Object)
         if not Ok then
             -- Nothing matched, or colour was asked for on a plain label with
             -- the RichText opt-in switched off. Leave the game's text alone
@@ -3153,6 +3462,7 @@ do
                     .. "\nPlaceId: " .. tostring(game.PlaceId)
                     .. "\nDetected UI Text Elements: " .. tostring(UIVisuals.LastScanCount)
                     .. "\nMulti-Label Stat Groups: " .. tostring(GroupCount)
+                    .. "\nColours Used In This Game: " .. tostring(#UIVisuals.Palette)
                     .. "\nShown In Dropdown: " .. tostring(#UIVisuals.Filtered)
                     .. (UIVisuals.GroupFilter and " (group isolated)" or "")
                     .. "\nActive UI Edits: " .. tostring(UIVisuals.EditCount)
@@ -3219,22 +3529,75 @@ do
         -- Live preview of what Apply would produce with the current settings.
         local Preview = "(type a value first)"
         if UIVisuals.PendingText ~= "" or UIVisuals.UseColor then
+            -- Preview shows the existing changes PLUS the one being typed,
+            -- so you can see the combined result before pressing Apply.
+            local Pending = UIVisuals.BuildPart()
+            local Combined = {}
+            local PendingKey = Helper.PartKey(Pending.Mode, Pending.Occurrence)
+            if Record and Record.Changes then
+                for _, Existing in ipairs(Record.Changes) do
+                    if Helper.PartKey(Existing.Mode, Existing.Occurrence) ~= PendingKey then
+                        table.insert(Combined, Existing)
+                    end
+                end
+            end
+            table.insert(Combined, Pending)
             local Draft = {
-                Mode = UIVisuals.EditMode,
-                Value = UIVisuals.PendingText,
-                Occurrence = UIVisuals.TargetIndex,
-                InputIsRich = UIVisuals.InputIsRich,
-                UseColor = UIVisuals.UseColor,
-                ColorHex = Helper.ColorHex(UIVisuals.EditColor),
+                Changes = Combined,
                 AllowEnableRich = UIVisuals.AllowEnableRich
             }
-            local Result, Ok, Note = Helper.Compose(Draft, RealRaw, IsRich)
+            local Result, Ok, Note = Helper.Compose(Draft, RealRaw, IsRich, Object)
             if Ok then
                 Preview = Helper.Trim(Result, 110)
             elseif Note == "needsrich" then
                 Preview = "plain label — enable \"Allow Enabling RichText\" to colour it"
             else
                 Preview = "no match at index " .. tostring(UIVisuals.TargetIndex)
+            end
+        end
+
+        -- What is currently applied to this label, so nothing is invisible.
+        local ChangeLines = {}
+        if Record and Record.Changes then
+            for Index, Change in ipairs(Record.Changes) do
+                local Label = tostring(Change.ResolvedMode or Change.Mode)
+                    .. " #" .. tostring(Change.Occurrence)
+                    .. " → " .. (Change.Value ~= "" and Helper.Trim(Change.Value, 20)
+                        or "(restyled only)")
+                local Extras = {}
+                if Change.UseColor then
+                    table.insert(Extras, Change.MatchGameColor and "game colour"
+                        or tostring(Change.ColorHex))
+                end
+                if Change.Bold then table.insert(Extras, "bold") end
+                if Change.Italic then table.insert(Extras, "italic") end
+                if Change.Underline then table.insert(Extras, "underline") end
+                if Change.Strike then table.insert(Extras, "strike") end
+                if (tonumber(Change.Size) or 0) > 0 then
+                    table.insert(Extras, "size " .. tostring(Change.Size))
+                end
+                if #Extras > 0 then
+                    Label = Label .. "  [" .. table.concat(Extras, ", ") .. "]"
+                end
+                table.insert(ChangeLines, "  " .. Index .. ". " .. Label)
+            end
+        end
+
+        -- The colour the game gives the piece you are currently targeting.
+        local GameColour = "unknown"
+        do
+            local Projection, ColorMap, ColorTokens = Helper.Project(RealRaw, IsRich)
+            local Mode = UIVisuals.EditMode
+            if Mode == "auto" then
+                Mode = Helper.ResolveAuto(Projection, UIVisuals.PendingText, UIVisuals.UseColor)
+            end
+            local Span = Helper.SpanOn(Projection, Mode, UIVisuals.TargetIndex,
+                RealRaw, IsRich, ColorMap)
+            if Span then
+                GameColour = Helper.ColorOfSpan(ColorTokens, ColorMap, Span.Start, Object)
+                    or "label default"
+            else
+                GameColour = "no target at #" .. tostring(UIVisuals.TargetIndex)
             end
         end
 
@@ -3266,8 +3629,14 @@ do
                     .. "\nStat Group: " .. GroupLine
                     .. "\n\nMode: " .. UIVisuals.EditMode
                     .. "  Target #: " .. tostring(UIVisuals.TargetIndex)
+                    .. "\nChanges On This Label: "
+                    .. (#ChangeLines > 0
+                        and ("\n" .. table.concat(ChangeLines, "\n"))
+                        or "none yet")
+                    .. "\nGame Colour Here: " .. tostring(GameColour)
                     .. "\nColour: " .. (UIVisuals.UseColor
-                        and (Helper.ColorHex(UIVisuals.EditColor)
+                        and ((UIVisuals.MatchGameColor and "match game"
+                                or UIVisuals.CurrentColorHex())
                             .. (IsRich and "" or (UIVisuals.AllowEnableRich
                                 and " (will enable RichText)"
                                 or " (blocked: label is plain)")))
@@ -3311,6 +3680,47 @@ do
             end
         end
         UIVisuals.UpdateGameInfo()
+    end
+
+    -- Rebuild the "colours this game uses" dropdown from the last scan.
+    -- Most-used colours come first, since those are the ones that actually
+    -- belong to the game's stat styling rather than one stray label.
+    function UIVisuals.RefreshPalette()
+        local Options = {UIVisuals.PaletteNone}
+        UIVisuals.PaletteLabelToHex = {}
+        for _, Entry in ipairs(UIVisuals.Palette) do
+            local Label = Helper.ColorName(Entry.Hex) .. "  " .. Entry.Hex
+                .. "  (" .. tostring(Entry.Count) .. ")"
+            if Entry.Sample and Entry.Sample ~= "" then
+                Label = Label .. "  " .. Entry.Sample
+            end
+            if not UIVisuals.PaletteLabelToHex[Label] then
+                table.insert(Options, Label)
+                UIVisuals.PaletteLabelToHex[Label] = Entry.Hex
+            end
+        end
+        if UIVisuals.PaletteDropdown then
+            pcall(function() UIVisuals.PaletteDropdown:Refresh(Options) end)
+        end
+    end
+
+    -- Picking a game colour just fills in the colour code box, so the picker,
+    -- the typed code, and the palette all feed the same single setting.
+    function UIVisuals.SelectPaletteColor(Label)
+        Label = tostring(Label or "")
+        if Label == "" or Label == UIVisuals.PaletteNone then
+            UIVisuals.ColorHexInput = ""
+            UIVisuals.UpdateSelectionInfo()
+            Notify("UI Visuals", "Back to your own colour.")
+            return
+        end
+        local Hex = UIVisuals.PaletteLabelToHex and UIVisuals.PaletteLabelToHex[Label]
+        if not Hex then return end
+        UIVisuals.ColorHexInput = Hex
+        UIVisuals.UseColor = true
+        UIVisuals.MatchGameColor = false
+        UIVisuals.UpdateSelectionInfo()
+        Notify("UI Visuals", "Using " .. Helper.ColorName(Hex) .. " " .. Hex .. ".")
     end
 
     -- Search filters the FULL detected list, not just what the dropdown shows.
@@ -3445,6 +3855,23 @@ do
             return
         end
 
+        -- Every colour this game's UI actually uses, so you can reuse one
+        -- instead of guessing a hex code.
+        local ColorSink = {}
+        pcall(function()
+            for _, Entry in ipairs(Entries) do
+                Helper.CollectColors(Entry, ColorSink)
+            end
+        end)
+        local Palette = {}
+        for _, Bucket in pairs(ColorSink) do table.insert(Palette, Bucket) end
+        table.sort(Palette, function(A, B)
+            if A.Count ~= B.Count then return A.Count > B.Count end
+            return A.Hex < B.Hex
+        end)
+        while #Palette > 40 do table.remove(Palette) end
+        UIVisuals.Palette = Palette
+
         -- Neighbouring labels that render as one stat, worked out before the
         -- sort so grouping is based on real screen positions.
         local Groups = {}
@@ -3517,6 +3944,7 @@ do
 
         UIVisuals.Scanning = false
         UIVisuals.ApplyFilter()
+        UIVisuals.RefreshPalette()
         UIVisuals.UpdateSelectionInfo()
         LogSuccess(
             "UI Visuals scanned " .. tostring(#Entries) .. " text elements in "
@@ -3585,11 +4013,66 @@ do
         UIVisuals.UpdateSelectionInfo()
     end
 
+    function UIVisuals.SetColorHexInput(Text)
+        UIVisuals.ColorHexInput = tostring(Text or "")
+        if UIVisuals.ColorHexInput ~= ""
+            and not Helper.ParseHex(UIVisuals.ColorHexInput) then
+            Notify("UI Visuals", "That colour code should look like #FF00FF.")
+        end
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    -- Public passthrough so other parts of the hub (and the self test) can
+    -- name a colour without reaching into the module's internals.
+    function UIVisuals.NameColor(Hex)
+        return Helper.ColorName(Hex)
+    end
+
+    function UIVisuals.SetMatchGameColor(Value)
+        UIVisuals.MatchGameColor = Value == true
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetStyleFlag(Name, Value)
+        UIVisuals[Name] = Value == true
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    function UIVisuals.SetSizeOverride(Value)
+        UIVisuals.SizeOverride = math.max(math.floor(tonumber(Value) or 0), 0)
+        UIVisuals.UpdateSelectionInfo()
+    end
+
+    -- The colour the user has chosen: typed hex wins over the picker.
+    function UIVisuals.CurrentColorHex()
+        return Helper.ParseHex(UIVisuals.ColorHexInput)
+            or Helper.ColorHex(UIVisuals.EditColor)
+    end
+
+    -- Everything the UI currently says one edit should be.
+    function UIVisuals.BuildPart()
+        return {
+            Mode = UIVisuals.EditMode,
+            Occurrence = UIVisuals.TargetIndex,
+            Value = UIVisuals.PendingText,
+            InputIsRich = UIVisuals.InputIsRich,
+            UseColor = UIVisuals.UseColor,
+            ColorHex = UIVisuals.CurrentColorHex(),
+            MatchGameColor = UIVisuals.MatchGameColor,
+            Bold = UIVisuals.Bold, Italic = UIVisuals.Italic,
+            Underline = UIVisuals.Underline, Strike = UIVisuals.Strike,
+            Size = UIVisuals.SizeOverride
+        }
+    end
+
     function UIVisuals.SetAllowEnableRich(Value)
         UIVisuals.AllowEnableRich = Value == true
         UIVisuals.UpdateSelectionInfo()
     end
 
+    -- Add or update ONE edit on the selected label. Edits already on that
+    -- label are kept, so you can change the name, then the number, then the
+    -- colour of the bracket letter and end up with all three.
     function UIVisuals.ApplySelected()
         local Entry = UIVisuals.SelectedKey
             and UIVisuals.EntryByKey[UIVisuals.SelectedKey]
@@ -3597,10 +4080,9 @@ do
             Notify("UI Visuals", "Select a UI element first.")
             return
         end
-        local NewValue = UIVisuals.PendingText
-        -- An empty value plus a colour is a valid request: recolour this
-        -- piece, keep whatever it currently says.
-        if NewValue == "" and not UIVisuals.UseColor then
+        local Part = UIVisuals.BuildPart()
+        local Styled = Helper.PartIsStyled(Part)
+        if Part.Value == "" and not Styled then
             Notify("UI Visuals", "Type something into Custom Display Text first.")
             return
         end
@@ -3619,11 +4101,12 @@ do
                 Key = Entry.Key,
                 Name = Entry.Name,
                 ClassName = Entry.ClassName,
-                Parts = Entry.Parts,
+                Parts = Entry.Parts,      -- instance path, not the edit list
                 ParentName = Entry.ParentName,
                 Path = Entry.Path,
                 RealText = Entry.Text,
                 LastApplied = nil,
+                Changes = {},
                 Active = true,
                 Applying = false,
                 Object = nil
@@ -3631,17 +4114,26 @@ do
             UIVisuals.Edits[Entry.Key] = Record
             UIVisuals.EditCount += 1
         end
-        -- The record stores the RECIPE, not a finished string. That is what
-        -- lets a locked edit re-apply itself into whatever new markup the
-        -- game renders next.
-        Record.Value = NewValue
-        Record.Mode = UIVisuals.EditMode
-        Record.Occurrence = UIVisuals.TargetIndex
-        Record.InputIsRich = UIVisuals.InputIsRich
-        Record.UseColor = UIVisuals.UseColor
-        Record.ColorHex = Helper.ColorHex(UIVisuals.EditColor)
+        Record.Changes = Record.Changes or {}
         Record.AllowEnableRich = UIVisuals.AllowEnableRich
         Record.Active = true
+
+        -- Same target twice means update, not duplicate. A whole-label edit
+        -- clears the rest, since it replaces everything anyway.
+        local Key = Helper.PartKey(Part.Mode, Part.Occurrence)
+        if Part.Mode == "whole" then
+            Record.Changes = {Part}
+        else
+            local Replaced = false
+            for Index, Existing in ipairs(Record.Changes) do
+                if Helper.PartKey(Existing.Mode, Existing.Occurrence) == Key then
+                    Record.Changes[Index] = Part
+                    Replaced = true
+                    break
+                end
+            end
+            if not Replaced then table.insert(Record.Changes, Part) end
+        end
 
         if not Alive then
             Object = Helper.Relocate(Record)
@@ -3656,17 +4148,24 @@ do
         Helper.EnsureConnections()
         Helper.Attach(Record, Object)
 
-        -- Attach applies it; check whether the recipe actually matched.
         if Record.LastNote == "needsrich" then
             Notify("UI Visuals",
-                "That label is not RichText. Enable \"Allow Enabling RichText\" to colour it.")
+                "That label is not RichText. Turn on \"Allow Enabling RichText\" to style it.")
             LogWarning(
-                "UI Visuals colour refused: RichText disabled and opt-in off ("
+                "UI Visuals style refused: RichText disabled and opt-in off ("
                 .. Entry.Path .. ")",
                 "UI Visuals"
             )
         elseif Record.LastNote == "nomatch" then
-            local Resolved = Record.ResolvedMode or Record.Mode
+            -- The edit we just added found nothing, so drop it again rather
+            -- than leaving a dud sitting in the list.
+            for Index = #Record.Changes, 1, -1 do
+                if Helper.PartKey(Record.Changes[Index].Mode,
+                    Record.Changes[Index].Occurrence) == Key then
+                    table.remove(Record.Changes, Index)
+                end
+            end
+            local Resolved = Part.ResolvedMode or Part.Mode
             local What = "number"
             if Resolved == "segment" then
                 What = "segment"
@@ -3676,22 +4175,58 @@ do
                 What = "name"
             end
             Notify("UI Visuals",
-                "No " .. What .. " #" .. tostring(Record.Occurrence) .. " in that label.")
-            LogWarning(
-                "UI Visuals apply matched nothing at index "
-                .. tostring(Record.Occurrence) .. " (" .. Entry.Path .. ")",
-                "UI Visuals"
-            )
+                "No " .. What .. " #" .. tostring(Part.Occurrence) .. " in that label.")
+            if #Record.Changes == 0 then Helper.Remove(Record, true) end
         else
             LogSuccess(
-                "UI Visuals set " .. Entry.Path .. " [" .. Record.Mode .. " #"
-                .. tostring(Record.Occurrence) .. "] to " .. Helper.Trim(NewValue, 40)
-                .. " (local display only)",
+                "UI Visuals set " .. Entry.Path .. " [" .. tostring(Part.ResolvedMode or Part.Mode)
+                .. " #" .. tostring(Part.Occurrence) .. "] "
+                .. (Part.Value ~= "" and ("to " .. Helper.Trim(Part.Value, 40)) or "restyled")
+                .. " (local display only), " .. tostring(#Record.Changes) .. " change(s) on this label",
                 "UI Visuals"
             )
-            Notify("UI Visuals", Entry.Name .. " now displays " .. Helper.Trim(NewValue, 24))
+            Notify("UI Visuals",
+                Entry.Name .. ": " .. tostring(#Record.Changes) .. " change(s) applied.")
         end
 
+        UIVisuals.UpdateSelectionInfo()
+        UIVisuals.UpdateGameInfo()
+    end
+
+    -- Undo just the target currently selected in the dropdowns, leaving the
+    -- other edits on that label alone.
+    function UIVisuals.RemoveCurrentPart()
+        local Key = UIVisuals.SelectedKey
+        local Record = Key and UIVisuals.Edits[Key]
+        if not Record or not Record.Changes then
+            Notify("UI Visuals", "That label has no changes to remove.")
+            return
+        end
+        local Wanted = Helper.PartKey(UIVisuals.EditMode, UIVisuals.TargetIndex)
+        local Removed = 0
+        for Index = #Record.Changes, 1, -1 do
+            local Existing = Record.Changes[Index]
+            if Helper.PartKey(Existing.Mode, Existing.Occurrence) == Wanted then
+                table.remove(Record.Changes, Index)
+                Removed += 1
+            end
+        end
+        if Removed == 0 then
+            Notify("UI Visuals", "No change on that exact target. Use Reset Selected instead.")
+            return
+        end
+        if #Record.Changes == 0 then
+            Helper.Remove(Record, true)
+            Notify("UI Visuals", "Last change removed, label restored.")
+        else
+            -- Restore first so the remaining edits re-apply cleanly.
+            Record.Applying = true
+            pcall(function() Record.Object.Text = Record.RealText end)
+            Record.Applying = false
+            Helper.Reapply(Record, Record.RealText)
+            Notify("UI Visuals",
+                tostring(#Record.Changes) .. " change(s) still on this label.")
+        end
         UIVisuals.UpdateSelectionInfo()
         UIVisuals.UpdateGameInfo()
     end
@@ -3875,6 +4410,54 @@ do
                 Expect = "Strength [S]: 2876.48"
             },
             {
+                Name = "colour rewrites the existing tag, no nesting",
+                Source = 'Strength [<font color="#0000FF">A</font>]: 10', Rich = true,
+                Mode = "bracket", Index = 1, Value = "S", Color = "#FF0000",
+                AllowRich = true,
+                Expect = 'Strength [<font color="#FF0000">S</font>]: 10'
+            },
+            {
+                Name = "bold and italic wrap correctly",
+                Source = "Coins: 300", Rich = false,
+                Mode = "name", Index = 1, Value = "Gems",
+                Bold = true, Italic = true, AllowRich = true,
+                Expect = "<b><i>Gems</i></b>: 300"
+            },
+            {
+                Name = "size override emitted",
+                Source = "Coins: 300", Rich = false,
+                Mode = "number", Index = 1, Value = "9", Size = 40, AllowRich = true,
+                Expect = 'Coins: <font size="40">9</font>'
+            },
+            {
+                Name = "name and number changed together",
+                Source = "Coins: 300", Rich = false,
+                Changes = {
+                    {Mode = "name", Occurrence = 1, Value = "Gems"},
+                    {Mode = "number", Occurrence = 1, Value = "999"}
+                },
+                Expect = "Gems: 999"
+            },
+            {
+                Name = "three edits on one rich label",
+                Source = 'Strength [<font color="#0000FF">A</font>]: 2876.48', Rich = true,
+                Changes = {
+                    {Mode = "name", Occurrence = 1, Value = "Power"},
+                    {Mode = "bracket", Occurrence = 1, Value = "S"},
+                    {Mode = "number", Occurrence = 1, Value = "1000"}
+                },
+                Expect = 'Power [<font color="#0000FF">S</font>]: 1000'
+            },
+            {
+                Name = "later edit does not undo the earlier one",
+                Source = "Coins: 300", Rich = false,
+                Changes = {
+                    {Mode = "number", Occurrence = 1, Value = "999"},
+                    {Mode = "name", Occurrence = 1, Value = "Gems"}
+                },
+                Expect = "Gems: 999"
+            },
+            {
                 Name = "plain label leaves brackets alone",
                 Source = "Level 12", Rich = false,
                 Mode = "auto", Index = 1, Value = "100",
@@ -3886,12 +4469,17 @@ do
         local Problems = {}
         for _, Case in ipairs(Cases) do
             local Record = {
-                Mode = Case.Mode,
-                Value = Case.Value,
-                Occurrence = Case.Index,
-                InputIsRich = false,
-                UseColor = Case.Color ~= nil,
-                ColorHex = Case.Color,
+                Changes = Case.Changes or {{
+                    Mode = Case.Mode,
+                    Value = Case.Value,
+                    Occurrence = Case.Index,
+                    InputIsRich = false,
+                    UseColor = Case.Color ~= nil,
+                    ColorHex = Case.Color,
+                    Bold = Case.Bold, Italic = Case.Italic,
+                    Underline = Case.Underline, Strike = Case.Strike,
+                    Size = Case.Size
+                }},
                 AllowEnableRich = Case.AllowRich == true
             }
             local Returned
@@ -3959,12 +4547,15 @@ do
         UIVisuals.LabelToKey = {}
         UIVisuals.Filtered = {}
         UIVisuals.Groups = {}
+        UIVisuals.Palette = {}
+        UIVisuals.PaletteLabelToHex = {}
         UIVisuals.GroupFilter = nil
         UIVisuals.SelectedKey = nil
         UIVisuals.LastScanCount = 0
         UIVisuals.Scanning = false
         if not Silent then
             pcall(UIVisuals.RefreshDropdown)
+            pcall(UIVisuals.RefreshPalette)
             pcall(UIVisuals.UpdateSelectionInfo)
         end
     end
@@ -4025,7 +4616,7 @@ do
     })
     HomeTab:CreateParagraph({
         Title = "✅ Release Status",
-        Content = "Available • UI Visuals name editing installed • Press " .. UIToggleKey.Name .. " to open or close"
+        Content = "Available • UI Visuals colour palette installed • Press " .. UIToggleKey.Name .. " to open or close"
     })
     local SessionStart = os.clock()
     local FrameCount = 0
@@ -4168,6 +4759,34 @@ do
         end
     })
     HomeTab:CreateSection("📜 What's New")
+    HomeTab:CreateParagraph({
+        Title = "v3.4 • Game Colour Palette",
+        Content =
+            "• Scanning now collects every font colour this game's UI uses"
+            .. "\n• 🎨 Colours This Game Uses lists them, most common first"
+            .. "\n• Each one shows a plain name, the code, how many labels use it,"
+            .. " and an example label"
+            .. "\n• Picking one fills in the colour code for you"
+            .. "\n• Reads both RichText font tags and plain TextColor3 values"
+            .. "\n• Searchable, so you can type red or a code to find one"
+    })
+    HomeTab:CreateParagraph({
+        Title = "v3.3 • Multi Edit & Styling",
+        Content =
+            "• Each label now holds a LIST of changes instead of just one"
+            .. "\n• Change the name, then the number, then the colour — none of them"
+            .. " overwrite each other any more"
+            .. "\n• Selected UI lists every change currently on the label"
+            .. "\n• Colouring rewrites the label's existing font tag instead of"
+            .. " nesting a second one inside it"
+            .. "\n• Game Colour Here shows the colour the game gives that exact piece"
+            .. "\n• 🎯 Use The Game's Own Colour keeps that colour when you edit"
+            .. "\n• Type an exact colour code like #FF00FF instead of using the picker"
+            .. "\n• Bold, Italic, Underline, Strikethrough and Text Size added"
+            .. "\n• 🧹 Undo Just This One Change removes one edit, keeping the rest"
+            .. "\n• Overlapping edits are detected and skipped rather than colliding"
+            .. "\n• Self Test grown to 25 checks"
+    })
     HomeTab:CreateParagraph({
         Title = "v3.2 • Edit Stat Names",
         Content =
@@ -4912,7 +5531,7 @@ do
     VisualsTab:CreateParagraph({
         Title = "📖 How To Use",
         Content =
-            "This changes words and numbers on your own screen."
+            "This changes words, numbers and colours on your own screen."
             .. "\n\n1. Press 🔎 Scan / Refresh UI."
             .. "\n2. Find your stat in Select UI Text. Type a word into Search UI"
             .. " to look for it, like coins or level."
@@ -4920,15 +5539,25 @@ do
             .. " letter in brackets."
             .. "\n4. Type the new word or number in Custom Display Text."
             .. "\n5. Press ✅ Apply."
-            .. "\n\nWant it a different colour too? Turn on 🖌️ Also Set Colour and pick"
-            .. " a colour before you press Apply. Leave Custom Display Text empty if you"
-            .. " only want to change the colour."
+            .. "\n\nYOU CAN CHANGE MORE THAN ONE THING. After you press Apply, just"
+            .. " pick another thing to change and press Apply again. The first change"
+            .. " stays. Selected UI shows everything you have changed so far."
             .. "\n\nExample: a stat says Coins: 300"
-            .. "\n  Change The Name + type Gems  →  Gems: 300"
-            .. "\n  Change The Number + type 999  →  Coins: 999"
-            .. "\n\nMade a mistake? Press ↩ Reset Selected to put one back, or"
-            .. " ♻ Reset All to put everything back. Closing BananiHub also puts"
-            .. " everything back."
+            .. "\n  Change The Name, type Gems, Apply  →  Gems: 300"
+            .. "\n  Then change The Number, type 999, Apply  →  Gems: 999"
+            .. "\n\nFOR COLOURS: turn on 🖌️ Also Set Colour, then choose the colour"
+            .. " in whichever way is easiest:"
+            .. "\n  • 🎨 Colours This Game Uses — a list of every colour already in"
+            .. " this game's menus, with the most used ones first. Easiest option."
+            .. "\n  • Pick A Colour — the colour wheel."
+            .. "\n  • Or Type A Colour Code — an exact code like #FF00FF."
+            .. "\nLeave Custom Display Text empty to only change the colour."
+            .. " 🎯 Use The Game's Own Colour keeps the colour it already has."
+            .. " You can also turn on Bold, Italic, Underline, Strikethrough,"
+            .. " or set a Text Size."
+            .. "\n\nMade a mistake? 🧹 undoes just the one thing you have selected."
+            .. " ↩ puts the whole label back. ♻ puts everything back. Closing"
+            .. " BananiHub also puts everything back."
             .. "\n\nThis is only pretend. Your real coins do not change, and nobody"
             .. " else can see it."
     })
@@ -5008,12 +5637,57 @@ do
         Color = Color3.fromRGB(80, 140, 255),
         Callback = function(Color) Runtime.UIVisuals.SetEditColor(Color) end
     })
+    VisualsTab:CreateInput({
+        Name = "Or Type A Colour Code",
+        PlaceholderText = "#FF00FF   (leave empty to use the picker)",
+        RemoveTextAfterFocusLost = false,
+        Callback = function(Text) Runtime.UIVisuals.SetColorHexInput(Text) end
+    })
+    Runtime.UIVisuals.PaletteDropdown = VisualsTab:CreateDropdown({
+        Name = "🎨 Colours This Game Uses",
+        Options = {Runtime.UIVisuals.PaletteNone},
+        CurrentOption = {Runtime.UIVisuals.PaletteNone},
+        SearchBarEnabled = true,
+        Callback = function(Option)
+            local Label = type(Option) == "table" and Option[1] or Option
+            Runtime.UIVisuals.SelectPaletteColor(Label)
+        end
+    })
+    VisualsTab:CreateToggle({
+        Name = "🎯 Use The Game's Own Colour", Flag = "UIVisuals_MatchGameColor", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetMatchGameColor(Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "𝐁 Bold", Flag = "UIVisuals_Bold", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetStyleFlag("Bold", Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "𝘐 Italic", Flag = "UIVisuals_Italic", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetStyleFlag("Italic", Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "U̲ Underline", Flag = "UIVisuals_Underline", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetStyleFlag("Underline", Value) end
+    })
+    VisualsTab:CreateToggle({
+        Name = "S̶ Strikethrough", Flag = "UIVisuals_Strike", CurrentValue = false,
+        Callback = function(Value) Runtime.UIVisuals.SetStyleFlag("Strike", Value) end
+    })
+    VisualsTab:CreateSlider({
+        Name = "Text Size (0 = leave alone)", Flag = "UIVisuals_SizeOverride",
+        Range = {0, 80}, Increment = 1, CurrentValue = 0,
+        Callback = function(Value) Runtime.UIVisuals.SetSizeOverride(Value) end
+    })
     VisualsTab:CreateButton({
         Name = "✅ Apply To Selected",
         Callback = function() Runtime.UIVisuals.ApplySelected() end
     })
     VisualsTab:CreateButton({
-        Name = "↩ Reset Selected",
+        Name = "🧹 Undo Just This One Change",
+        Callback = function() Runtime.UIVisuals.RemoveCurrentPart() end
+    })
+    VisualsTab:CreateButton({
+        Name = "↩ Reset This Whole Label",
         Callback = function() Runtime.UIVisuals.ResetSelected() end
     })
     VisualsTab:CreateButton({
@@ -5424,7 +6098,7 @@ do
         ["Freecam"] = "Open Camera > Freecam Controls. WASD to move, Q/E down/up, hold right-click to look.",
         ["Box ESP"] = "Draws a box around visible player characters.",
         ["Health ESP"] = "Shows a health bar and number near visible player characters.",
-        ["UI Visuals"] = "Visuals > UI Visuals changes words and numbers on your own screen. Press Scan / Refresh UI, find your stat in Select UI Text using Search UI, choose what you want to change, type the new word or number into Custom Display Text, and press Apply. What Do You Want To Change lets you pick The Name, The Number, The Letter In [Brackets], or Everything, and Figure It Out For Me guesses from what you type: digits change the number, a short letter changes the bracket tag, and a word changes the name. So Coins: 300 becomes Gems: 300 or Coins: 999 depending on what you type. Colours, fonts and styling are always kept. To recolour, turn on Also Set Colour and pick a colour before pressing Apply, and leave Custom Display Text empty if you only want the colour to change. Reset Selected puts one label back, Reset All puts everything back, and unloading BananiHub also puts everything back. Advanced holds the target number for labels with more than one value like 25 / 100, the RichText options, stat group isolation, and a Self Test that checks the feature works without reading anything from your game. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
+        ["UI Visuals"] = "Visuals > UI Visuals changes words, numbers and colours on your own screen. Press Scan / Refresh UI, find your stat in Select UI Text using Search UI, choose what you want to change, type the new word or number into Custom Display Text, and press Apply. You can apply more than one change to the same label: pick another target and press Apply again and the first change stays, with Selected UI listing everything currently applied. What Do You Want To Change lets you pick The Name, The Number, The Letter In [Brackets], or Everything, and Figure It Out For Me guesses from what you type. For colour, turn on Also Set Colour and then choose the colour in one of three ways: the Colours This Game Uses dropdown lists every colour found during the scan, sorted by how often the game uses it and showing a plain name, the code, a count, and an example label; the colour wheel; or by typing a code like #FF00FF. Leave Custom Display Text empty to change only the colour. Use The Game's Own Colour keeps the colour the game already gives that piece, and Game Colour Here in the info card tells you what that colour is. Bold, Italic, Underline, Strikethrough and Text Size are also available. Colouring rewrites the existing font tag where there is one rather than nesting another inside it. Undo Just This One Change removes a single edit and keeps the others, Reset This Whole Label removes them all, Reset All clears every label, and unloading BananiHub puts everything back. Advanced holds the target index for labels with more than one value like 25 / 100, the RichText options, stat group isolation, and a Self Test. This is display only on your own screen: it changes no server data, no leaderstats, and fires no RemoteEvents, so nothing you display here is real to the game or to other players.",
         ["Performance Mode"] = "Visuals > Performance. Disables particles, post-processing, shadows, and complex materials. Turning it off restores visuals."
     }
     local Order = {"Fly", "Auto Walk", "Noclip", "Spider Climb", "Saved Waypoints", "Route Builder", "Route Play", "Ground Snap", "Freecam", "Box ESP", "Health ESP", "UI Visuals", "Performance Mode"}
